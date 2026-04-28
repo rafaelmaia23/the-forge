@@ -1,0 +1,28 @@
+# Segredos e credenciais
+.env
+*.secret
+secrets/
+
+# Chaves e certificados
+*.pem
+*.key
+*.crt
+*.p12
+
+# Dados gerados pelos containers em runtime
+**/data/
+**/letsencrypt/
+**/*.log
+logs/
+
+# Dumps de banco de dados
+*.sql
+*.sql.gz
+
+# Backups locais temporários
+backup/local/
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+*~
