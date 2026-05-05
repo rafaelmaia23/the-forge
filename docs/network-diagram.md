@@ -21,10 +21,10 @@ Dispositivos pessoais (celular / PC / notebook)
 │  Interfaces de rede:                                         │
 │    enp0s6     → Internet (IP público Oracle)                 │
 │    tailscale0 → Rede privada Tailscale (100.64.0.0/10)       │
-│    wg-br-12   → Túnel WireGuard Proton VPN (Table=off)       │
+│    wg-mull-br → Túnel WireGuard Mullvad VPN (Table=off)       │
 │                                                              │
 │  Roteamento (policy routing):                                │
-│    tráfego iif tailscale0 → tabela 51820 → wg-br-12          │
+│    tráfego iif tailscale0 → tabela 51820 → wg-mull-br         │
 │    tráfego da própria VM  → enp0s6 (rota padrão intacta)     │
 │    range 100.64.0.0/10   → tailscale0 (local, não sai VPN)   │
 │                                                              │
@@ -39,10 +39,10 @@ Dispositivos pessoais (celular / PC / notebook)
 │  WireGuard: policy routing, apenas tráfego forwardado        │
 └──────────────────────────────────────────────────────────────┘
 │
-│ WireGuard (Proton VPN) — apenas tráfego dos dispositivos
+│ WireGuard (Mullvad VPN) — apenas tráfego dos dispositivos
 ▼
 Internet pública
-(IP visível = servidor Proton VPN, não Oracle)
+(IP visível = servidor Mullvad VPN, não Oracle)
 ```
 
 ---
@@ -55,7 +55,7 @@ Dispositivo → [Tailscale] → VM (INPUT) → resposta direta
 
 ── Acesso à internet pelos dispositivos ─────────────────────────
 Dispositivo → [Tailscale] → VM (FORWARD, iif tailscale0)
-           → tabela 51820 → [WireGuard/Proton VPN] → Internet
+           → tabela 51820 → [WireGuard/Mullvad VPN] → Internet
 
 ── Tráfego da própria VM (SSH, atualizações) ────────────────────
 VM → enp0s6 → Internet (IP Oracle, rota padrão)

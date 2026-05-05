@@ -27,7 +27,7 @@ Atualizado durante a execução de cada fase.
 - Tailscale instalado e configurado como exit node (aprovado no painel admin)
 - WireGuard instalado com configurações Proton VPN (BR, US, UK)
 - Policy routing configurado: tráfego forwardado pelo Tailscale sai pelo Proton VPN
-- `wg-quick@wg-br-12` habilitado no boot via systemctl
+- `wg-quick@wg-mull-br` habilitado no boot via systemctl
 
 ### Configurações anotadas
 
@@ -40,8 +40,8 @@ Atualizado durante a execução de cada fase.
 
 ### Desvios do plano original
 
-**WireGuard em vez de Proton VPN CLI**
-A CLI oficial do Proton VPN não funciona em ambientes headless (sem `gnome-keyring` e `NetworkManager`). A autenticação funciona mas o `protonvpn connect` falha silenciosamente. Solução: usar WireGuard diretamente com os arquivos `.conf` gerados no painel do Proton VPN — mais simples, mais estável e é o que a CLI faz por baixo dos panos.
+**WireGuard com Mullvad em vez de Proton VPN CLI**
+A CLI oficial do Proton VPN não funciona em ambientes headless (sem `gnome-keyring` e `NetworkManager`). Além disso, os servidores listados como "BR-SP" pelo Proton estavam fisicamente em Miami (~200ms, 30% packet loss). Migração para Mullvad com WireGuard direto resolveu ambos os problemas — servidores Mullvad BR via Datapacket estão fisicamente em São Paulo (0.5ms, ~300 Mbps).
 
 **Ubuntu 24.04 em vez de 22.04**
 A VM foi provisionada com Ubuntu 24.04 LTS. O `provision.sh` foi atualizado para suportar 22.04 e 24.04.
@@ -70,7 +70,27 @@ Solução: definir senha para emergências com `sudo passwd ubuntu` e armazenar 
 
 ---
 
-## Próximas fases
+## 2026-05-05 — Troca Proton VPN → Mullvad VPN
+
+### O que foi feito
+
+- Identificado que servidores Proton "BR-SP" estavam fisicamente em Miami via `curl https://ipinfo.io/`
+- Testados servidores Mullvad BR (Zenlayer/Fortaleza, Datapacket/SP, Hostroyale/SP)
+- Migração para Mullvad VPN via WireGuard — provider Datapacket, São Paulo
+- Todos os arquivos `.conf` do Proton removidos de `/etc/wireguard/`
+- `wg-quick@wg-br-57` (Proton) desabilitado do boot
+- `wg-quick@wg-mull-br` (Mullvad) habilitado no boot
+
+### Resultado
+
+| Métrica | Proton BR-SP | Mullvad BR (Datapacket) |
+|---|---|---|
+| Localização real | Miami 🇺🇸 | São Paulo 🇧🇷 |
+| Latência | ~200ms | 0.5ms |
+| Packet loss | 30% | 0% |
+| Velocidade celular | ~40 Mbps | ~300 Mbps |
+
+---
 
 - **Fase 2** — AdGuard Home: DNS privado com bloqueio de trackers
 - **Fase 3** — Nginx Proxy Manager: proxy reverso com SSL wildcard
