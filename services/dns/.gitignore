@@ -1,0 +1,5 @@
+# Dados de runtime — logs, estatísticas, cache
+data/
+
+# O AdGuardHome.yaml real (com senha hash) é versionado intencionalmente.
+# O hash bcrypt não expõe a senha — é seguro manter no repositório público.
