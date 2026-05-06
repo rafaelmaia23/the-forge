@@ -64,7 +64,7 @@ O Projeto Homelab é uma infraestrutura de auto-hospedagem completa rodando na *
 | Arquitetura                   | ARM (AArch64)                     |
 | OCPUs                         | 4                                 |
 | RAM                           | 24 GB                             |
-| OS                            | Ubuntu 22.04 LTS                  |
+| OS                            | Ubuntu 24.04 LTS                  |
 | Boot Volume                   | 50 GB (SO + containers)           |
 | Block Volume                  | 150 GB montado em `/mnt/data`     |
 | Total Free Tier Block Storage | 200 GB                            |
@@ -77,11 +77,10 @@ O Projeto Homelab é uma infraestrutura de auto-hospedagem completa rodando na *
 | ----- | --------- | -------------- | ------------------------------ |
 | 80    | TCP       | 0.0.0.0/0      | NPM (HTTP → redirect HTTPS)    |
 | 443   | TCP       | 0.0.0.0/0      | NPM (HTTPS)                    |
-| 22    | TCP       | IPs confiáveis | SSH                            |
 | 41641 | UDP       | 0.0.0.0/0      | Tailscale                      |
 | 53    | TCP/UDP   | 100.64.0.0/10  | AdGuard DNS (apenas Tailscale) |
 
-> **Atenção:** A porta 53 deve estar fechada para o mundo externo. O AdGuard é acessível apenas dentro da rede Tailscale.
+> **Nota:** Acesso SSH exclusivamente via Tailscale — regra SSH por IP removida da Security List após confirmar estabilidade do Tailscale. A porta 53 deve estar fechada para o mundo externo. O AdGuard é acessível apenas dentro da rede Tailscale.
 
 ---
 
@@ -104,13 +103,13 @@ VPS Oracle — Interface tailscale0
     │       ├── Filtra trackers e malware (OISD + AdGuard DNS filter)
     │       └── Upstream: Quad9 DoH (https://dns10.quad9.net/dns-query)
     │
-    └─► Proton VPN (kill switch ON, split tunnel: tailscale0 excluído)
+    └─► Mullvad VPN via WireGuard (Table=off, policy routing: iif tailscale0)
             │
             ▼
-        Internet (IP público = servidor Proton VPN)
+        Internet (IP público = servidor Mullvad VPN)
 ```
 
-> **Detalhe crítico:** O split tunnel da Proton VPN deve excluir a interface `tailscale0` e o range `100.64.0.0/10`. Sem isso, o kill switch da Proton bloqueia o tráfego interno do Tailscale, quebrando o acesso SSH e aos serviços privados.
+> **Detalhe crítico:** O policy routing usa `iif tailscale0` como critério — afeta apenas pacotes que chegam pela interface Tailscale sendo forwardados. Tráfego que a VM gera localmente (SSH, serviços) nunca passa pelo tunnel WireGuard. Usar `from 100.64.0.0/10` quebraria o SSH porque a VM tem IP Tailscale nesse range.
 
 ### Fluxo de tráfego — Acesso público (namorada, família)
 
@@ -566,19 +565,29 @@ tailscale up --advertise-exit-node
 - Aprovar o exit node da VPS
 - Definir IP Tailscale da VPS como nameserver global
 
-### Proton VPN
+### Mullvad VPN (WireGuard)
 
-- **Função:** Mascarar o IP da VPS na internet (ISP vê tráfego para Proton, sites veem IP do servidor Proton)
-- **Kill switch:** ON — se a VPN cair, o tráfego para a internet é bloqueado
-- **Split tunnel obrigatório:** Excluir interface `tailscale0` e range `100.64.0.0/10` do túnel Proton para não quebrar o acesso SSH e aos serviços internos
+- **Função:** Mascarar o IP de saída dos dispositivos na internet — ISP vê tráfego para Mullvad, sites veem IP do servidor Mullvad
+- **Implementação:** WireGuard direto com arquivos `.conf` gerados no painel Mullvad — sem app/CLI, compatível com ambiente headless
+- **Policy routing:** `iif tailscale0 → tabela 51820 → wg-mull-br` — apenas tráfego forwardado pelo Tailscale sai pelo Mullvad
+- **Servidores:** BR (São Paulo/Datapacket, 0.5ms), US (Nova York), UK (Londres), JP (Tóquio), CH (Zurique)
 
 **Fluxo completo de tráfego:**
 
 ```text
-Dispositivo → [Tailscale WireGuard] → VPS → [Proton VPN] → Internet
+Dispositivo → [Tailscale WireGuard] → VPS → [Mullvad WireGuard] → Internet
                      ↑                   ↑
-               DNS: AdGuard          Kill switch ON
-               Exit node habilitado  Split tunnel: tailscale0 excluído
+               DNS: AdGuard          policy routing:
+               Exit node habilitado  iif tailscale0 → tabela 51820
+```
+
+**Trocar de servidor:**
+
+```bash
+sudo wg-quick down wg-mull-br
+sudo ip route del 100.64.0.0/10 table 51820 2>/dev/null
+sudo ip rule del iif tailscale0 table 51820 2>/dev/null
+sudo wg-quick up wg-mull-us
 ```
 
 ---
@@ -856,18 +865,20 @@ Backup não testado é backup inválido. Mensalmente:
 
 ---
 
-### Fase 1 — Fundação Oracle Cloud
+### Fase 1 — Fundação Oracle Cloud ✅
 
-- [ ] **1.1** Ativar Pay As You Go na OCI (necessário para o free tier completo)
-- [ ] **1.2** Criar VCN-Homelab com Internet Gateway via VCN Wizard
-- [ ] **1.3** Configurar Security List conforme tabela da seção 2
-- [ ] **1.4** Provisionar VM A1 (4 OCPU / 24GB RAM / Ubuntu 22.04)
-- [ ] **1.5** Configurar block volume de 150GB e montar em `/mnt/data`
-- [ ] **1.6** Criar repositório Git `homelab` e clonar em `/srv`
-- [ ] **1.7** Executar `infrastructure/provision.sh` (Docker, dirs, rede proxy)
-- [ ] **1.8** Instalar e configurar Tailscale como exit node
-- [ ] **1.9** Instalar Proton VPN CLI com split tunnel e kill switch
-- [ ] **1.10** Anotar IP Tailscale da nova instância Oracle
+- [x] **1.1** Ativar Pay As You Go na OCI (necessário para o free tier completo)
+- [x] **1.2** Criar VCN-Homelab com Internet Gateway via VCN Wizard
+- [x] **1.3** Configurar Security List conforme tabela da seção 2
+- [x] **1.4** Provisionar VM A1 (4 OCPU / 24GB RAM / Ubuntu 24.04)
+- [x] **1.5** Configurar block volume de 150GB e montar em `/mnt/data`
+- [x] **1.6** Criar repositório Git `the-forge` e clonar em `/srv/the-forge`
+- [x] **1.7** Executar `infrastructure/provision.sh` (Docker, dirs, rede proxy)
+- [x] **1.8** Instalar e configurar Tailscale como exit node
+- [x] **1.9** Instalar WireGuard + Mullvad VPN com policy routing
+- [x] **1.10** Remover regra SSH pública — acesso exclusivamente via Tailscale
+- [x] **1.11** Snapshot OCI: boot volume + block volume (`homelab-v1-foundation-20260505`)
+- [x] **1.12** Commit e tag `v1.0-foundation`
 
 ---
 
@@ -974,7 +985,7 @@ Backup não testado é backup inválido. Mensalmente:
 | #   | Risco                                                  | Mitigação                                                                                   |
 | --- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
 | 1   | DNS Rewrite desatualizado após troca de IP             | Atualizar o rewrite no AdGuard é o **primeiro passo** após obter o IP Oracle                |
-| 2   | Split tunnel Proton VPN quebra Tailscale               | Configurar split tunnel excluindo `tailscale0` e `100.64.0.0/10` antes de ligar kill switch |
+| 2   | Rotas órfãs do WireGuard ao trocar servidor           | Sempre limpar com `ip route del` + `ip rule del` antes de subir outro tunnel |
 | 3   | Elasticsearch versão incompatível com plugin Nextcloud | Verificar versão compatível antes de subir a stack                                          |
 | 4   | Volume `/mnt/data` não montado causa perda de dados    | Verificar `/etc/fstab` com `nofail` e testar `mount -a` antes de subir serviços             |
 
@@ -999,92 +1010,45 @@ Backup não testado é backup inválido. Mensalmente:
 
 ## 12. Architecture Decision Records (ADRs)
 
+Os ADRs completos estão em `docs/decisions/`. Resumo:
+
 ### ADR-001 — Docker por serviço vs. Compose único
 
-**Status:** Aceito | **Data:** 2026-04-27
+**Status:** Aceito | **Data:** 2026-05-04
 
-**Contexto:** O servidor executa múltiplos serviços com ciclos de vida e responsabilidades diferentes.
-
-**Decisão:** Cada serviço/stack tem seu próprio `compose.yaml` em diretório separado.
-
-**Consequências:**
-
-- ✅ Falha em um serviço não derruba os demais
-- ✅ Updates independentes por serviço
-- ✅ Git history claro e rastreável por serviço
-- ✅ Mais fácil de documentar e apresentar como portfólio
-- ⚠️ A rede `proxy` precisa existir antes de qualquer stack (`docker network create proxy`)
+Cada serviço tem seu próprio `compose.yaml` em `services/`. Falha em um serviço não derruba os demais. A rede `proxy` precisa existir antes de qualquer stack (`docker network create proxy` — feito pelo `provision.sh`).
 
 ---
 
-### ADR-002 — Tailscale como VPN principal
+### ADR-002 — Tailscale como rede privada e exit node
 
-**Status:** Aceito | **Data:** 2026-04-27
+**Status:** Aceito | **Data:** 2026-05-04
 
-**Contexto:** Necessidade de acesso privado aos serviços da VPS a partir de múltiplos dispositivos, incluindo Android (que suporta apenas uma VPN ativa).
-
-**Decisão:** Tailscale como camada de rede privada + exit node. Proton VPN rodando na VPS (não nos dispositivos) para mascarar o IP de saída.
-
-**Consequências:**
-
-- ✅ Android pode usar Tailscale como única VPN e ter tanto acesso privado quanto mascaramento de IP
-- ✅ Sem necessidade de gerenciar chaves WireGuard manualmente
-- ⚠️ Dependência de um serviço de coordenação externo (painel Tailscale) — funciona mesmo offline, mas novos dispositivos precisam de conectividade para entrar na rede
+Tailscale como camada de rede privada + exit node. Mullvad VPN rodando na VM (não nos dispositivos) para mascarar IP de saída. Android usa Tailscale como única VPN e tem simultaneamente acesso privado e mascaramento de IP.
 
 ---
 
-### ADR-003 — Nextcloud standalone vs. AIO
+### ADR-003 — Block volume de 150 GB desde a Fase 1
 
-**Status:** Aceito | **Data:** 2026-04-27
+**Status:** Aceito | **Data:** 2026-05-04
 
-**Contexto:** Nextcloud AIO simplifica o deploy mas é uma caixa-preta difícil de versionar, debugar e documentar. O objetivo do projeto inclui portfólio técnico.
-
-**Decisão:** Stack Nextcloud manual com containers separados (`nextcloud`, `postgres`, `redis`, `collabora`, `elasticsearch`, `clamav`, `notify_push`, `imaginary`).
-
-**Consequências:**
-
-- ✅ Controle total de cada variável de ambiente e volume
-- ✅ Compose file totalmente versionável e documentável
-- ✅ Mais fácil de debugar problemas por componente
-- ⚠️ Mais trabalho de configuração inicial
-- ⚠️ Responsabilidade manual de manter compatibilidade entre versões dos componentes
+Block volume criado e montado em `/mnt/data` desde o início para evitar migração de dados futura. Custo zero no free tier. Montado em `/mnt/data` (não `/mnt`) para permitir múltiplos volumes no futuro.
 
 ---
 
-### ADR-004 — PostgreSQL vs. MariaDB para Nextcloud
+### ADR-004 — WireGuard direto com Mullvad VPN
 
-**Status:** Aceito | **Data:** 2026-04-27
+**Status:** Aceito | **Data:** 2026-05-05
 
-**Contexto:** O Nextcloud suporta MySQL/MariaDB e PostgreSQL. O AIO usa PostgreSQL por padrão.
-
-**Decisão:** PostgreSQL 16 para o Nextcloud.
-
-**Consequências:**
-
-- ✅ Melhor performance para workloads de busca e dados estruturados
-- ✅ Consistência com o que o AIO usa (facilita eventual migração de dados existentes)
-- ✅ Suporte nativo a tipos de dados mais ricos (JSONB, arrays)
+Proton VPN CLI não funciona em ambiente headless. Servidores Proton "BR-SP" estavam fisicamente em Miami (~200ms, 30% packet loss). Mullvad BR via Datapacket SP apresentou 0.5ms e ~300 Mbps. WireGuard direto com `.conf` do Mullvad — sem app, sem CLI, compatível com headless.
 
 ---
 
-### ADR-005 — Estratégia de backup: Restic + Rclone + Snapshots OCI
+### ADR-005 — Policy routing com `iif tailscale0`
 
-**Status:** Aceito | **Data:** 2026-04-27
+**Status:** Aceito | **Data:** 2026-05-04
 
-**Contexto:** Sem backup no servidor atual. Necessidade de estratégia confiável, com versionamento real para dados pessoais e proteção contra ransomware.
-
-**Decisão:** Stack de três ferramentas com responsabilidades distintas: Restic para dados com versionamento (Nextcloud, bancos), Rclone para mídia sem versionamento, Snapshots OCI para estado da VM antes de mudanças de infra.
-
-**Consequências:**
-
-- ✅ Cumpre a regra 3-2-1 (VPS vivo + PC local + B2 offsite)
-- ✅ Restic permite restaurar o estado dos dados em qualquer ponto no tempo (diário/semanal/mensal)
-- ✅ Restic tem criptografia e deduplicação embutidas — repositório B2 é menor que um rclone sync puro
-- ✅ Object Lock no B2 protege contra deleção acidental ou maliciosa
-- ✅ Snapshots OCI permitem rollback instantâneo da VM inteira
-- ✅ Rclone para mídia é mais simples e eficiente para grandes volumes sem necessidade de histórico
-- ⚠️ Restic requer inicialização do repositório antes do primeiro backup (`restic init`)
-- ⚠️ A senha do repositório Restic é irrecuperável — deve ser armazenada em local seguro fora da VPS
+`from 100.64.0.0/10` quebra SSH porque a VM tem IP Tailscale nesse range. `iif tailscale0` afeta apenas pacotes forwardados pela interface — nunca respostas locais da VM. Cobertura do tráfego originado na VM planejada para após Fase 4 via `fwmark` no OUTPUT.
 
 ---
 
@@ -1190,8 +1154,8 @@ journalctl -f
 # Status do Tailscale
 tailscale status
 
-# Status do Proton VPN
-protonvpn-cli status
+# Status do WireGuard/Mullvad
+sudo wg show
 ```
 
 ---
