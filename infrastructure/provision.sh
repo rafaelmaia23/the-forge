@@ -22,6 +22,7 @@
 #   7. Configura fail2ban (proteção SSH)
 #   8. Configura atualizações automáticas de segurança
 #   9. Cria estrutura de diretórios e rede Docker proxy
+#  10. Cria serviço systemd tailscale-docker-forward (ver ADR-006)
 # =============================================================================
 
 set -euo pipefail
@@ -283,6 +284,32 @@ else
     docker network create proxy
     log "Rede Docker 'proxy' criada"
 fi
+
+# ─── 10. Tailscale → Docker forwarding ───────────────────────────────────────
+section "10/10 — Tailscale → Docker forwarding"
+
+# Sem esta configuração, pacotes de clientes Tailscale destinados a containers
+# Docker são roteados para a tabela 51820 (Mullvad) após o DNAT, e desaparecem.
+# Ver docs/decisions/ADR-006-tailscale-docker-routing.md
+cat > /etc/systemd/system/tailscale-docker-forward.service << 'EOF'
+[Unit]
+Description=Allow Tailscale traffic to Docker containers
+After=docker.service tailscaled.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'iptables -C DOCKER-USER -i tailscale0 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -i tailscale0 -j ACCEPT'
+ExecStart=/bin/bash -c 'ip rule add to 172.16.0.0/12 lookup main priority 5200 2>/dev/null || true'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable tailscale-docker-forward.service
+log "tailscale-docker-forward.service criado e habilitado"
 
 # =============================================================================
 echo ""

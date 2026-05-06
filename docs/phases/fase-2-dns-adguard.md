@@ -25,15 +25,15 @@ Ao final desta fase:
 
 ## Decisões arquiteturais desta fase
 
-| Decisão | Escolha | Motivo |
-|---|---|---|
-| Software DNS | AdGuard Home | Interface amigável, DoH nativo, sem container extra |
-| Porta 53 | Desabilitar stub do systemd-resolved | Libera a porta para o AdGuard sem quebrar o sistema |
-| Upstream DNS | Quad9 + Cloudflare + Mullvad DoH em paralelo | Velocidade, resiliência e privacidade |
-| Blocklists | AdGuard DNS filter + OISD Full | Abrangentes com poucos falsos positivos |
-| DNS Rewrite | Wildcard `*.maiahub.com.br` + exceções Vercel | Uma regra cobre todos os serviços futuros |
-| Dados | `config/` versionado, `data/` no .gitignore | Configuração rastreável, logs fora do repo |
-| Override Tailscale | Ativar só no final | Evita quebrar DNS dos dispositivos durante configuração |
+| Decisão            | Escolha                                       | Motivo                                                  |
+| ------------------ | --------------------------------------------- | ------------------------------------------------------- |
+| Software DNS       | AdGuard Home                                  | Interface amigável, DoH nativo, sem container extra     |
+| Porta 53           | Desabilitar stub do systemd-resolved          | Libera a porta para o AdGuard sem quebrar o sistema     |
+| Upstream DNS       | Quad9 + Cloudflare + Mullvad DoH em paralelo  | Velocidade, resiliência e privacidade                   |
+| Blocklists         | AdGuard DNS filter + OISD Full                | Abrangentes com poucos falsos positivos                 |
+| DNS Rewrite        | Wildcard `*.maiahub.com.br` + exceções Vercel | Uma regra cobre todos os serviços futuros               |
+| Dados              | `config/` versionado, `data/` no .gitignore   | Configuração rastreável, logs fora do repo              |
+| Override Tailscale | Ativar só no final                            | Evita quebrar DNS dos dispositivos durante configuração |
 
 ---
 
@@ -74,6 +74,7 @@ EOF
 ```
 
 **Por que dois volumes separados:**
+
 - `./config` → onde o `AdGuardHome.yaml` fica — versionado
 - `./data` → logs de queries, banco de estatísticas, cache — não versionado
 
@@ -220,6 +221,7 @@ https://doh.mullvad.net/dns-query
 **Upstream mode:** Parallel requests (todos recebem a query, usa a resposta mais rápida)
 
 **Bootstrap DNS** (usado para resolver os próprios endereços DoH):
+
 ```
 9.9.9.10
 149.112.112.10
@@ -236,10 +238,10 @@ Salvar.
 
 Adicionar:
 
-| Nome | URL |
-|---|---|
+| Nome               | URL                                                                  |
+| ------------------ | -------------------------------------------------------------------- |
 | AdGuard DNS filter | `https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt` |
-| OISD Full | `https://big.oisd.nl` |
+| OISD Full          | `https://big.oisd.nl`                                                |
 
 Após adicionar, clicar em **Update filters**.
 
@@ -249,8 +251,8 @@ Após adicionar, clicar em **Update filters**.
 
 **Regra geral (todos os serviços da Oracle):**
 
-| Domain | Answer |
-|---|---|
+| Domain             | Answer              |
+| ------------------ | ------------------- |
 | `*.maiahub.com.br` | `{{OCI_PUBLIC_IP}}` |
 
 **Exceções (serviços na Vercel — não devem bater na Oracle):**
@@ -475,6 +477,7 @@ ip rule | grep tailscale
 ### Fase 3 — Proxy Reverso (Nginx Proxy Manager)
 
 Com o DNS no ar, o próximo passo é subir o NPM para:
+
 - Ser o ponto de entrada único para todo tráfego HTTP/HTTPS
 - Emitir certificado wildcard `*.maiahub.com.br` via DNS Challenge (Cloudflare)
 - Criar proxy hosts para cada serviço com SSL automático

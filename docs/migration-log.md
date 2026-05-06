@@ -72,7 +72,7 @@ Solução: definir senha para emergências com `sudo passwd ubuntu` e armazenar 
 
 ## 2026-05-05 — Troca Proton VPN → Mullvad VPN
 
-### O que foi feito
+### O que mudou
 
 - Identificado que servidores Proton "BR-SP" estavam fisicamente em Miami via `curl https://ipinfo.io/`
 - Testados servidores Mullvad BR (Zenlayer/Fortaleza, Datapacket/SP, Hostroyale/SP)
@@ -84,11 +84,62 @@ Solução: definir senha para emergências com `sudo passwd ubuntu` e armazenar 
 ### Resultado
 
 | Métrica | Proton BR-SP | Mullvad BR (Datapacket) |
-|---|---|---|
+| --- | --- | --- |
 | Localização real | Miami 🇺🇸 | São Paulo 🇧🇷 |
 | Latência | ~200ms | 0.5ms |
 | Packet loss | 30% | 0% |
 | Velocidade celular | ~40 Mbps | ~300 Mbps |
+
+---
+
+## 2026-05-06 — Fase 2: AdGuard Home
+
+### O que foi instalado
+
+- `services/dns/compose.yaml` criado e commitado
+- `services/dns/.gitignore` local criado (documenta o `data/` ignorado)
+- Stub listener do systemd-resolved desativado (`/etc/systemd/resolved.conf.d/no-stub.conf`)
+- `/etc/resolv.conf` confirmado como symlink para `/run/systemd/resolve/resolv.conf` (nameserver: `169.254.169.254`, OCI DHCP — correto)
+- Container adguard subiu sem erros, porta 53 e 3000 respondendo localmente
+
+### Problemas e soluções
+
+#### Painel AdGuard inacessível via Tailscale (porta 3000)
+
+A causa raiz foi uma interação não-óbvia entre o policy routing do Mullvad VPN e o DNAT do Docker.
+
+Sequência do diagnóstico (3h de debugging):
+
+1. UFW não tinha regra FORWARD para `tailscale0` → adicionado `ufw route allow in on tailscale0`
+2. `DOCKER-USER` chain vazia → adicionado `iptables -I DOCKER-USER -i tailscale0 -j ACCEPT`
+3. Mesmo com FORWARD aceito, pacotes chegavam em `tailscale0` mas nunca apareciam na bridge Docker — `tcpdump -i br-3f53f4cdd713` não capturava nada
+4. O sistema usa nftables nativo (101 chains) com `iptables-nft` como camada de compatibilidade
+5. O DNAT padrão do Docker (`fib daddr type local → DOCKER chain`) disparava para tráfego local da VM, mas para clientes externos via Tailscale o pacote era DNATado e depois roteado para a tabela 51820 (por causa da regra `iif tailscale0 lookup 51820`)
+6. A tabela 51820 só tinha `default dev wg-mull-br` — sem rota para `172.18.0.0/16` (rede Docker) — então os pacotes DNATados iam para o Mullvad e desapareciam
+
+**Solução final:**
+
+Adicionar ip rule com prioridade superior à regra `iif tailscale0 lookup 51820` (prioridade 5209):
+
+```bash
+ip rule add to 172.16.0.0/12 lookup main priority 5200
+```
+
+Isso faz com que pacotes com destino a qualquer rede Docker (`172.16.0.0/12`) usem a tabela `main` — que tem as rotas para as bridges Docker — antes de chegar à regra da tabela 51820. Cobre todas as redes Docker presentes e futuras sem precisar conhecer o nome da bridge.
+
+Persistência via systemd service (`tailscale-docker-forward.service`) que também adiciona a regra `DOCKER-USER ACCEPT` para `tailscale0`.
+
+Ver [ADR-006](decisions/ADR-006-tailscale-docker-routing.md) para análise completa.
+
+### Configurações criadas fora do repositório
+
+| Onde | O que | Por quê |
+| --- | --- | --- |
+| `/etc/systemd/system/tailscale-docker-forward.service` | DOCKER-USER ACCEPT + ip rule priority 5200 | Persistência após reboot |
+| UFW | `ufw route allow in on tailscale0` | FORWARD de tráfego Tailscale para containers |
+| UFW | `allow from 100.64.0.0/10 to any port 3000` | Acesso ao painel AdGuard via Tailscale |
+
+> Nota: o `tailscale-docker-forward.service` deve ser adicionado ao `provision.sh` para reproducibilidade — ver checklist da fase.
 
 ---
 

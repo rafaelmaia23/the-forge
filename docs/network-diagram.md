@@ -1,7 +1,7 @@
 # Diagrama de Rede — Estado atual
 
-**Atualizado em:** 2026-05-04
-**Versão:** v1.0-foundation
+**Atualizado em:** 2026-05-06
+**Versão:** v1.1-dns
 
 ---
 
@@ -24,12 +24,13 @@ Dispositivos pessoais (celular / PC / notebook)
 │    wg-mull-br → Túnel WireGuard Mullvad VPN (Table=off)       │
 │                                                              │
 │  Roteamento (policy routing):                                │
-│    tráfego iif tailscale0 → tabela 51820 → wg-mull-br         │
-│    tráfego da própria VM  → enp0s6 (rota padrão intacta)     │
-│    range 100.64.0.0/10   → tailscale0 (local, não sai VPN)   │
+│    to 172.16.0.0/12 prio 5200 → tabela main (redes Docker)  │
+│    iif tailscale0  prio 5209 → tabela 51820 → wg-mull-br    │
+│    tráfego da própria VM     → enp0s6 (rota padrão intacta)  │
+│    range 100.64.0.0/10       → tailscale0 (não sai pela VPN) │
 │                                                              │
 │  Docker:                                                     │
-│    rede proxy (bridge)                                       │
+│    rede proxy (bridge) — AdGuard Home ativo [:53, :3000]                                       │
 │                                                              │
 │  Storage:                                                    │
 │    /dev/sda → boot volume 50 GB  → /                        │
@@ -116,7 +117,6 @@ VM → enp0s6 → Internet (IP Oracle, rota padrão)
 
 ## O que ainda não está ativo nesta fase
 
-- AdGuard Home (DNS privado) — Fase 2
 - Nginx Proxy Manager — Fase 3
 - Portainer / Uptime Kuma / Netdata — Fase 4
 - Nextcloud — Fase 5

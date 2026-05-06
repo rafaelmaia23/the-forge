@@ -1,5 +1,6 @@
 # Segredos e credenciais
 .env
+*.env
 *.secret
 secrets/
 
