@@ -92,15 +92,24 @@ Solução: definir senha para emergências com `sudo passwd ubuntu` e armazenar 
 
 ---
 
-## 2026-05-06 — Fase 2: AdGuard Home
+## 2026-05-06/07 — Fase 2: AdGuard Home
 
-### O que foi instalado
+### O que foi feito
 
 - `services/dns/compose.yaml` criado e commitado
 - `services/dns/.gitignore` local criado (documenta o `data/` ignorado)
 - Stub listener do systemd-resolved desativado (`/etc/systemd/resolved.conf.d/no-stub.conf`)
 - `/etc/resolv.conf` confirmado como symlink para `/run/systemd/resolve/resolv.conf` (nameserver: `169.254.169.254`, OCI DHCP — correto)
 - Container adguard subiu sem erros, porta 53 e 3000 respondendo localmente
+- Upstream DNS configurado: Quad9 + Cloudflare + Mullvad DoH em modo paralelo
+- Bootstrap DNS configurado: `9.9.9.10`, `149.112.112.10`, `1.1.1.1`
+- Blocklists adicionadas: AdGuard DNS filter + OISD Full
+- DNS Rewrites criados:
+  - `cloud.maiahub.com.br` → OCI_PUBLIC_IP
+  - `adguard.maiahub.com.br` → OCI_PUBLIC_IP
+  - `npm.maiahub.com.br` → OCI_PUBLIC_IP (pré-criado para Fase 3)
+- Override DNS ativado no painel Tailscale (`100.120.15.48`, override global)
+- `services/dns/config/AdGuardHome.yaml` commitado
 
 ### Problemas e soluções
 
@@ -131,6 +140,21 @@ Persistência via systemd service (`tailscale-docker-forward.service`) que tamb�
 
 Ver [ADR-006](decisions/ADR-006-tailscale-docker-routing.md) para análise completa.
 
+#### Wildcard DNS Rewrite substituído por entradas individuais
+
+A configuração inicial usava `*.maiahub.com.br → OCI_IP` como wildcard, com regras `@@||blog.maiahub.com.br^` e `@@||clone-tabnews.maiahub.com.br^` no campo "Custom filtering rules" para excluir serviços na Vercel.
+
+O problema: regras `@@` no AdGuard só desativam o pipeline de bloqueio de anúncios/trackers — elas não afetam o mecanismo de DNS Rewrite, que opera em camada separada e tem precedência. Resultado: `blog.maiahub.com.br` retornava o IP Oracle em vez do IP da Vercel.
+
+**Solução aplicada:** wildcard removido, entradas individuais criadas para cada serviço hospedado na Oracle:
+
+| Domain | Answer |
+| --- | --- |
+| `cloud.maiahub.com.br` | OCI_PUBLIC_IP |
+| `adguard.maiahub.com.br` | OCI_PUBLIC_IP |
+
+Serviços na Vercel (`blog`, `clone-tabnews`) não têm entrada — resolvem normalmente pelo upstream DNS. As regras `@@` foram removidas.
+
 ### Configurações criadas fora do repositório
 
 | Onde | O que | Por quê |
@@ -141,9 +165,13 @@ Ver [ADR-006](decisions/ADR-006-tailscale-docker-routing.md) para análise compl
 
 > Nota: o `tailscale-docker-forward.service` deve ser adicionado ao `provision.sh` para reproducibilidade — ver checklist da fase.
 
+### Observação — DNS no Tailscale no Linux
+
+O `cat /etc/resolv.conf` continua mostrando `127.0.0.53` (stub do systemd-resolved) mesmo após o override ativado. Isso é comportamento esperado: o Tailscale configura o systemd-resolved via D-Bus, não substitui o resolv.conf. A cadeia real é `app → 100.100.100.100 (MagicDNS Tailscale) → AdGuard`. Validação via `resolvectl status` (ver interface `tailscale0`) ou pelo resultado do `dig` sem `@`.
+
 ---
 
-- **Fase 2** — AdGuard Home: DNS privado com bloqueio de trackers
+- **Fase 2** ✅ — AdGuard Home: DNS privado com bloqueio de trackers
 - **Fase 3** — Nginx Proxy Manager: proxy reverso com SSL wildcard
 - **Fase 4** — Portainer + Uptime Kuma + Netdata: gerenciamento e monitoramento
 - **Fase 5** — Nextcloud: migração dos dados da Hostinger

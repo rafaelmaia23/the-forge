@@ -31,7 +31,7 @@ Ao final desta fase:
 | Porta 53           | Desabilitar stub do systemd-resolved          | Libera a porta para o AdGuard sem quebrar o sistema     |
 | Upstream DNS       | Quad9 + Cloudflare + Mullvad DoH em paralelo  | Velocidade, resiliência e privacidade                   |
 | Blocklists         | AdGuard DNS filter + OISD Full                | Abrangentes com poucos falsos positivos                 |
-| DNS Rewrite        | Wildcard `*.maiahub.com.br` + exceções Vercel | Uma regra cobre todos os serviços futuros               |
+| DNS Rewrite        | Entradas individuais por serviço Oracle       | Wildcard + regras `@@` não funciona: `@@` afeta só o pipeline de bloqueio, não o mecanismo de DNS Rewrite |
 | Dados              | `config/` versionado, `data/` no .gitignore   | Configuração rastreável, logs fora do repo              |
 | Override Tailscale | Ativar só no final                            | Evita quebrar DNS dos dispositivos durante configuração |
 
@@ -249,26 +249,19 @@ Após adicionar, clicar em **Update filters**.
 
 `Filters → DNS rewrites → Add DNS rewrite`
 
-**Regra geral (todos os serviços da Oracle):**
+Criar uma entrada por serviço hospedado na Oracle:
 
-| Domain             | Answer              |
-| ------------------ | ------------------- |
-| `*.maiahub.com.br` | `{{OCI_PUBLIC_IP}}` |
+| Domain                      | Answer              |
+| --------------------------- | ------------------- |
+| `cloud.maiahub.com.br`      | `{{OCI_PUBLIC_IP}}` |
+| `adguard.maiahub.com.br`    | `{{OCI_PUBLIC_IP}}` |
+| `npm.maiahub.com.br`        | `{{OCI_PUBLIC_IP}}` |
 
-**Exceções (serviços na Vercel — não devem bater na Oracle):**
+> Adicionar novas entradas aqui conforme novos serviços forem criados nas fases seguintes.
 
-Para domínios na Vercel, não criamos um rewrite — em vez disso, deixamos o AdGuard consultar o upstream normalmente. Isso é feito via **custom filtering rules**:
+Serviços hospedados na Vercel (`blog.maiahub.com.br`, `clone-tabnews.maiahub.com.br`) **não recebem entrada** — o AdGuard os resolve normalmente pelo upstream DNS, que retorna os IPs da Vercel.
 
-`Filters → Custom filtering rules`
-
-Adicionar:
-
-```
-@@||blog.maiahub.com.br^
-@@||clone-tabnews.maiahub.com.br^
-```
-
-O prefixo `@@` significa "não bloqueie e não redirecione" — o AdGuard passa a query para o upstream normalmente, que vai resolver pelo Cloudflare público (onde os registros da Vercel estão).
+> **Por que não usar wildcard `*.maiahub.com.br`:** Regras `@@` no campo "Custom filtering rules" só desativam o pipeline de bloqueio de anúncios — elas não afetam o mecanismo de DNS Rewrite, que opera em camada separada e tem precedência. Um wildcard com exceções `@@` faz com que os subdomínios da Vercel continuem retornando o IP Oracle.
 
 ### 4.5 — Configurações gerais recomendadas
 
@@ -362,13 +355,15 @@ login.tailscale.com/admin/dns
 Em cada dispositivo com Tailscale conectado, verificar que o DNS mudou:
 
 ```bash
-# Linux/Mac
-cat /etc/resolv.conf
-# Deve mostrar o IP Tailscale da VM
+# Linux — o /etc/resolv.conf continua mostrando 127.0.0.53 (stub do systemd-resolved)
+# Isso é esperado: o Tailscale configura o systemd-resolved via D-Bus, não substitui o resolv.conf
+# Para ver o DNS real configurado pelo Tailscale:
+resolvectl status
+# Deve mostrar o IP Tailscale da VM como DNS server na interface tailscale0
 
-# Ou testar diretamente
+# Teste funcional — sem especificar @servidor
 dig cloud.maiahub.com.br
-# Deve retornar {{OCI_PUBLIC_IP}} sem especificar @servidor
+# Deve retornar {{OCI_PUBLIC_IP}}
 ```
 
 No Android com Tailscale conectado: abrir `blog.maiahub.com.br` e `cloud.maiahub.com.br` no browser — ambos devem funcionar corretamente.
@@ -397,8 +392,7 @@ git commit -m "feat(dns): add AdGuard Home config and bring up service
 
 - Upstream: Quad9 + Cloudflare + Mullvad DoH (parallel)
 - Blocklists: AdGuard DNS filter + OISD Full
-- DNS Rewrite: *.maiahub.com.br → OCI
-- Exceptions: blog.maiahub.com.br, clone-tabnews.maiahub.com.br (Vercel)"
+- DNS Rewrites: cloud, adguard, npm → OCI"
 git push
 ```
 
@@ -417,13 +411,14 @@ git push
 - [ ] Upstream DNS configurado (Quad9 + Cloudflare + Mullvad)
 - [ ] Test upstreams passou (todos OK)
 - [ ] Blocklists AdGuard DNS filter + OISD Full adicionadas e atualizadas
-- [ ] DNS Rewrite `*.maiahub.com.br → {{OCI_PUBLIC_IP}}` criado
-- [ ] Exceções Vercel criadas (`@@||blog...` e `@@||clone-tabnews...`)
+- [ ] DNS Rewrite `cloud.maiahub.com.br → {{OCI_PUBLIC_IP}}` criado
+- [ ] DNS Rewrite `adguard.maiahub.com.br → {{OCI_PUBLIC_IP}}` criado
+- [ ] DNS Rewrite `npm.maiahub.com.br → {{OCI_PUBLIC_IP}}` criado
 
 ### Testes
 
 - [ ] `dig @127.0.0.1 cloud.maiahub.com.br` retorna `{{OCI_PUBLIC_IP}}`
-- [ ] `dig @127.0.0.1 blog.maiahub.com.br` retorna IP da Vercel (não Oracle)
+- [ ] `dig @127.0.0.1 blog.maiahub.com.br` retorna IP da Vercel (CNAME para `vercel-dns-*.com`, não Oracle)
 - [ ] `dig @127.0.0.1 doubleclick.net` retorna `0.0.0.0` (bloqueado)
 - [ ] Porta 53 fechada na Security List OCI para `0.0.0.0/0`
 
