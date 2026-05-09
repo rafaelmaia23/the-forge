@@ -1,0 +1,5 @@
+# Dados de runtime do NPM (SQLite DB, configuração interna, logs)
+data/
+
+# Certificados e chaves privadas — gerados pelo Let's Encrypt
+letsencrypt/

@@ -4,9 +4,9 @@
 
 **Projeto:** Homelab
 **Fase:** 3 de 9
-**Objetivo:** Ponto de entrada único para todo tráfego HTTP/HTTPS com SSL wildcard automático e controle de acesso por IP
+**Objetivo:** Ponto de entrada único para tráfego HTTP/HTTPS com SSL individual por serviço e controle de acesso por IP
 **Tempo estimado:** 1–2 horas
-**Pré-requisito:** Fase 2 concluída — AdGuard Home no ar, Override DNS do Tailscale ativo, domínio `maiahub.com.br` gerenciado pelo Cloudflare
+**Pré-requisito:** Fase 2 concluída — AdGuard no ar, override DNS do Tailscale ativo, DNS Rewrites `npm.maiahub.com.br` e `adguard.maiahub.com.br` já criados
 
 ---
 
@@ -15,11 +15,13 @@
 Ao final desta fase:
 
 - Nginx Proxy Manager rodando como container Docker na VM
-- Certificado SSL wildcard `*.maiahub.com.br` emitido e renovado automaticamente via DNS Challenge (Cloudflare)
-- Access List `tailscale-only` configurada — painéis de controle acessíveis apenas na rede Tailscale
-- Proxy host para o próprio painel NPM (`npm.maiahub.com.br`) com SSL e restrição Tailscale
-- Proxy host para o painel AdGuard (`adguard.maiahub.com.br`) com SSL e restrição Tailscale
-- Regra UFW temporária da Fase 2 (porta 3000 direta) removida — AdGuard acessível apenas via proxy
+- Certificado SSL individual para `npm.maiahub.com.br` via DNS Challenge (Cloudflare)
+- Certificado SSL individual para `adguard.maiahub.com.br` via DNS Challenge (Cloudflare)
+- Access List `tailscale-only` configurada — painéis acessíveis apenas na rede Tailscale
+- Proxy host `npm.maiahub.com.br` com HTTPS e restrição Tailscale
+- Proxy host `adguard.maiahub.com.br` com HTTPS e restrição Tailscale
+- Porta 81 removida do compose.yaml — painel NPM acessível apenas via proxy
+- Regra UFW temporária da Fase 2 (porta 3000 direta ao AdGuard) removida
 
 ---
 
@@ -28,11 +30,21 @@ Ao final desta fase:
 | Decisão | Escolha | Motivo |
 | --- | --- | --- |
 | Software de proxy | Nginx Proxy Manager | Interface gráfica, DNS Challenge nativo, Access Lists sem configuração extra |
-| Banco de dados | MariaDB (container `npm-db`) | Compatível com o plano de backup da Fase 8 (`mysqldump`); mais robusto que SQLite para produção |
-| Certificado | Wildcard `*.maiahub.com.br` via DNS Challenge | HTTP Challenge não suporta wildcard; DNS Challenge não depende de porta 80 exposta |
-| Provider DNS Challenge | Cloudflare | Domínio já gerenciado pelo Cloudflare; API madura com suporte nativo no NPM |
-| Armazenamento de certificados | Bind mount `./letsencrypt` | Path previsível (`/srv/the-forge/services/proxy/letsencrypt/`) facilita backup da Fase 8 |
-| Acesso ao painel NPM | Exclusivo Tailscale (Access List) | Painel de administração não deve ser exposto publicamente |
+| Database | SQLite (default NPM) | Sem container extra; adequado para uso pessoal sem perdas de funcionalidade |
+| Certificados | Um por serviço via DNS Challenge | Isola cada serviço; DNS Challenge é necessário para domínios tailscale-only (HTTP Challenge requer acesso externo ao port 80) |
+| Storage | Bind mounts `./data` e `./letsencrypt` | Padrão oficial NPM; paths previsíveis e diretos para o backup da Fase 8 |
+| Porta 81 | Remover do compose após setup | Painel acessível só via HTTPS; recuperação de emergência via SSH se necessário |
+
+---
+
+## Por que DNS Challenge para todos os serviços
+
+O Let's Encrypt oferece dois mecanismos de verificação:
+
+- **HTTP-01:** verifica colocando um arquivo em `http://domínio/.well-known/acme-challenge/`. Não funciona para serviços tailscale-only — os servidores da Let's Encrypt (internet pública) são bloqueados pela Access List do NPM.
+- **DNS-01:** verifica adicionando um registro TXT `_acme-challenge.domínio` no DNS público (Cloudflare). Não depende de acesso HTTP ao servidor — funciona para qualquer domínio, privado ou público.
+
+Como todos os painéis de controle são tailscale-only, DNS Challenge é obrigatório para eles. Por consistência, usamos DNS Challenge para todos os serviços do homelab.
 
 ---
 
@@ -40,17 +52,12 @@ Ao final desta fase:
 
 > Faça esta etapa na sua **máquina local**.
 
-### 1.1 — Criar a estrutura de diretórios
+### 1.1 — Criar o compose.yaml
 
 ```bash
-cd ~/projetos/the-forge
-mkdir -p services/proxy
-```
+mkdir -p ~/projetos/the-forge/services/proxy
 
-### 1.2 — Criar o compose.yaml
-
-```bash
-cat > services/proxy/compose.yaml << 'EOF'
+cat > ~/projetos/the-forge/services/proxy/compose.yaml << 'EOF'
 services:
   npm:
     image: jc21/nginx-proxy-manager:latest
@@ -60,91 +67,47 @@ services:
       - "80:80"
       - "443:443"
       - "81:81"
-    environment:
-      DB_MYSQL_HOST: npm-db
-      DB_MYSQL_NAME: ${NPM_DB_NAME}
-      DB_MYSQL_USER: ${NPM_DB_USER}
-      DB_MYSQL_PASSWORD: ${NPM_DB_PASSWORD}
     volumes:
-      - npm_data:/data
+      - ./data:/data
       - ./letsencrypt:/etc/letsencrypt
-    depends_on:
-      - npm-db
     networks:
       - proxy
-      - npm_internal
-
-  npm-db:
-    image: jc21/mariadb-aria:latest
-    container_name: npm-db
-    restart: unless-stopped
-    environment:
-      MYSQL_ROOT_PASSWORD: ${NPM_DB_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${NPM_DB_NAME}
-      MYSQL_USER: ${NPM_DB_USER}
-      MYSQL_PASSWORD: ${NPM_DB_PASSWORD}
-    volumes:
-      - npm_db:/var/lib/mysql
-    networks:
-      - npm_internal
 
 networks:
   proxy:
     external: true
-  npm_internal:
-    driver: bridge
-    internal: true
-
-volumes:
-  npm_data:
-  npm_db:
 EOF
 ```
 
-**Por que dois containers:**
+**Por que dois bind mounts e não volumes nomeados:**
 
-- `npm` → a aplicação proxy em si; lê o estado do banco e gerencia o Nginx internamente
-- `npm-db` → MariaDB isolado na rede `npm_internal` — não exposto para outras stacks
+- `./data` → SQLite DB + configuração interna do NPM. Path fixo em `/srv/the-forge/services/proxy/data/` — incluído diretamente no backup Restic da Fase 8.
+- `./letsencrypt` → certificados e chaves privadas. Mesmo path previsível para backup. Já coberto pelo `.gitignore` do serviço.
 
-**Por que `letsencrypt/` como bind mount e não volume nomeado:**
+Ambos seguem o padrão da documentação oficial do NPM.
 
-O diretório `./letsencrypt` fica em `/srv/the-forge/services/proxy/letsencrypt/` — path fixo e previsível que o script de backup da Fase 8 já referencia. Com volume nomeado, o path seria dentro de `/var/lib/docker/volumes/...` e exigiria mapeamento extra no backup. O diretório já está coberto pelo `.gitignore` do projeto (`**/letsencrypt/`).
+**Por que a porta 81 está aqui inicialmente:**
 
-**Por que a porta 81 está exposta:**
+Necessária para o primeiro acesso ao painel antes de criar o proxy host. Será removida na Etapa 10 após o proxy estar verificado.
 
-Necessária para acesso inicial ao painel de administração antes de criar o proxy host. Após criar o proxy host `npm.maiahub.com.br`, o acesso ao painel se dá via HTTPS na porta 443. A porta 81 pode ser removida do `ports:` após isso — o NPM acessa o próprio painel pelo container `npm` na rede `proxy` interna.
-
-> **Nota de segurança:** A porta 81 só é acessível via Tailscale porque o UFW bloqueia todo tráfego externo por padrão. Mesmo assim, criar o proxy host e remover a porta 81 é uma boa prática.
-
-### 1.3 — Criar o .env.example
+### 1.2 — Criar o .gitignore do serviço
 
 ```bash
-cat > services/proxy/.env.example << 'EOF'
-# Banco de dados do NPM
-NPM_DB_NAME=npm
-NPM_DB_USER=npm
-NPM_DB_PASSWORD=
-NPM_DB_ROOT_PASSWORD=
-EOF
-```
+cat > ~/projetos/the-forge/services/proxy/.gitignore << 'EOF'
+# Dados de runtime do NPM (SQLite DB, configuração interna, logs)
+data/
 
-### 1.4 — Criar o .gitignore do serviço
-
-```bash
-cat > services/proxy/.gitignore << 'EOF'
-# Certificados e chaves privadas — nunca commitar
+# Certificados e chaves privadas — gerados pelo Let's Encrypt
 letsencrypt/
-
-# .env com credenciais reais
-.env
 EOF
 ```
 
-> O `.gitignore` raiz já cobre `**/letsencrypt/` e `*.env`, mas um `.gitignore` local torna a intenção explícita para quem lê o diretório.
+> Esses padrões são específicos do NPM e ficam aqui, não no `.gitignore` raiz do projeto.
 
-### 1.5 — Commitar a estrutura
+### 1.3 — Commitar
 
 ```bash
+cd ~/projetos/the-forge
 git add services/proxy/
 git commit -m "feat(proxy): add Nginx Proxy Manager service structure"
 git push
@@ -152,7 +115,7 @@ git push
 
 ---
 
-## Etapa 2 — Criar o .env na VM
+## Etapa 2 — Preparar a VM
 
 > A partir daqui, tudo na **VM via SSH**.
 
@@ -166,36 +129,13 @@ ssh homelab
 cd /srv/the-forge && git pull
 ```
 
-### 2.2 — Verificar se as portas 80 e 443 estão livres
+### 2.2 — Verificar se as portas estão livres
 
 ```bash
-sudo ss -tulnp | grep -E ':80|:443|:81'
+sudo ss -tulnp | grep -E ':80 |:443 |:81 '
 ```
 
-Não deve aparecer nada ocupando essas portas. Se aparecer, identificar o processo e parar antes de continuar.
-
-### 2.3 — Criar o .env com as credenciais reais
-
-```bash
-cd /srv/the-forge/services/proxy
-
-# Gerar senhas fortes
-NPM_DB_PASSWORD=$(openssl rand -base64 24)
-NPM_DB_ROOT_PASSWORD=$(openssl rand -base64 24)
-
-cat > .env << EOF
-NPM_DB_NAME=npm
-NPM_DB_USER=npm
-NPM_DB_PASSWORD=${NPM_DB_PASSWORD}
-NPM_DB_ROOT_PASSWORD=${NPM_DB_ROOT_PASSWORD}
-EOF
-
-chmod 600 .env
-
-# Anotar as senhas no secrets.env local para referência futura
-echo "NPM_DB_PASSWORD=${NPM_DB_PASSWORD}" >> ~/.homelab/secrets.env
-echo "NPM_DB_ROOT_PASSWORD=${NPM_DB_ROOT_PASSWORD}" >> ~/.homelab/secrets.env
-```
+Não deve aparecer nada. Se aparecer, identificar o processo e parar antes de continuar.
 
 ---
 
@@ -205,88 +145,49 @@ echo "NPM_DB_ROOT_PASSWORD=${NPM_DB_ROOT_PASSWORD}" >> ~/.homelab/secrets.env
 cd /srv/the-forge/services/proxy
 docker compose up -d
 
-# Acompanhar a inicialização
-docker compose logs -f --tail=50
+# Acompanhar inicialização (aguardar ~30s)
+docker logs npm --tail 30 -f
 ```
 
-Aguardar até aparecer algo como `started` ou `listening on`. A primeira inicialização pode levar 30–60 segundos enquanto o MariaDB prepara o schema.
+Aguardar aparecer algo como `Server Listening on port 81` antes de continuar.
 
 ```bash
-# Verificar que ambos os containers estão rodando
+# Confirmar que está rodando
 docker ps | grep npm
 ```
 
-Deve mostrar `npm` e `npm-db` com status `Up`.
-
 ---
 
-## Etapa 4 — Configuração inicial pelo painel
+## Etapa 4 — Configuração inicial do painel
 
-> Acesse o painel via **navegador na sua máquina local**.
+> Acesse via **navegador na sua máquina local**.
 
-O painel de administração está em: `http://{{OCI_TS_IP}}:81`
-
-> Use o IP Tailscale da VM — não o IP público Oracle.
+Painel em: `http://{{OCI_TS_IP}}:81`
 
 ### 4.1 — Primeiro acesso
 
-Credenciais padrão do NPM:
+Credenciais padrão:
 
-| Campo | Valor padrão |
+| Campo | Valor |
 | --- | --- |
 | Email | `admin@example.com` |
 | Senha | `changeme` |
 
-Ao entrar, o NPM imediatamente solicita a troca de email e senha. Definir:
+O NPM solicita imediatamente a troca. Definir:
 
 - **Email:** seu email real
 - **Nome:** como preferir
-- **Senha:** forte, gerada com `openssl rand -base64 24`
+- **Senha:** forte — `openssl rand -base64 24`
 
-Anotar a nova senha no `~/.homelab/secrets.env` da VM.
+Anotar a senha em `~/.homelab/secrets.env` na VM:
+
+```bash
+echo "NPM_ADMIN_PASSWORD=<senha>" >> ~/.homelab/secrets.env
+```
 
 ---
 
-## Etapa 5 — Emitir certificado wildcard
-
-`SSL Certificates → Add SSL Certificate → Let's Encrypt`
-
-### 5.1 — Preencher o formulário
-
-| Campo | Valor |
-| --- | --- |
-| Domain Names | `*.maiahub.com.br` |
-| Email Address | seu email |
-| Use a DNS Challenge | ✅ habilitado |
-| DNS Provider | Cloudflare |
-| Credentials File Content | (ver abaixo) |
-| Propagation Seconds | 60 |
-| I Agree to ToS | ✅ |
-
-**Credentials File Content** — colar exatamente neste formato:
-
-```
-dns_cloudflare_api_token = {{CF_API_TOKEN}}
-```
-
-> O token precisa ter permissão **Zone:DNS:Edit** para a zona `maiahub.com.br`. Criar em `dash.cloudflare.com → My Profile → API Tokens → Create Token → Edit zone DNS`.
-
-### 5.2 — Salvar e aguardar
-
-Clicar em **Save**. O NPM vai:
-
-1. Criar um registro TXT `_acme-challenge.maiahub.com.br` no Cloudflare via API
-2. Aguardar a propagação (60s configurado)
-3. Solicitar o certificado à Let's Encrypt
-4. Remover o registro TXT
-
-O processo leva 1–3 minutos. Ao concluir, o certificado aparece na lista com validade de 90 dias (renovação automática pelo NPM).
-
-**Se falhar com "Timeout" ou "DNS record not found":** aumentar Propagation Seconds para 120 e tentar novamente.
-
----
-
-## Etapa 6 — Criar Access List tailscale-only
+## Etapa 5 — Criar Access List tailscale-only
 
 `Access Lists → Add Access List`
 
@@ -298,27 +199,55 @@ O processo leva 1–3 minutos. Ao concluir, o certificado aparece na lista com v
 
 Na seção **Allow**:
 
-| Address | (vazio) |
-| --- | --- |
-| `100.64.0.0/10` | — |
+```
+100.64.0.0/10
+```
 
-Na seção **Deny** (já vem preenchido):
-
-| Address |
-| --- |
-| `all` |
+Na seção **Deny**: `all` (já preenchido por padrão).
 
 Salvar.
 
-> O range `100.64.0.0/10` é o espaço de endereços CGNAT usado pelo Tailscale para todos os dispositivos da rede. Qualquer cliente Tailscale tem IP nesse range e passa pela Access List; clientes externos são bloqueados automaticamente pelo `deny all`.
+> `100.64.0.0/10` é o espaço CGNAT do Tailscale — todos os dispositivos da sua rede têm IP nesse range. Qualquer IP externo é bloqueado automaticamente pelo `deny all`.
 
 ---
 
-## Etapa 7 — Criar proxy hosts
+## Etapa 6 — Emitir certificado: npm.maiahub.com.br
+
+`SSL Certificates → Add SSL Certificate → Let's Encrypt`
+
+| Campo | Valor |
+| --- | --- |
+| Domain Names | `npm.maiahub.com.br` |
+| Email Address | seu email |
+| Use a DNS Challenge | ✅ habilitado |
+| DNS Provider | Cloudflare |
+| Credentials File Content | ver abaixo |
+| Propagation Seconds | `60` |
+| I Agree to ToS | ✅ |
+
+**Credentials File Content** (colar exatamente assim):
+
+```
+dns_cloudflare_api_token = {{CF_API_TOKEN}}
+```
+
+> O token precisa de permissão **Zone:DNS:Edit** para `maiahub.com.br`. Criar em `dash.cloudflare.com → My Profile → API Tokens → Create Token → Edit zone DNS`.
+
+Clicar em **Save**. O NPM vai:
+1. Adicionar `_acme-challenge.npm.maiahub.com.br` TXT no Cloudflare via API
+2. Aguardar propagação (60s)
+3. Let's Encrypt verifica o TXT no DNS público do Cloudflare
+4. Certificado emitido — TXT removido automaticamente
+
+Processo leva 1–3 minutos. Se falhar com timeout, aumentar para 120s e tentar novamente.
+
+---
+
+## Etapa 7 — Criar proxy host: npm.maiahub.com.br
 
 `Proxy Hosts → Add Proxy Host`
 
-### 7.1 — Painel NPM
+**Aba Details:**
 
 | Campo | Valor |
 | --- | --- |
@@ -328,186 +257,201 @@ Salvar.
 | Forward Port | `81` |
 | Block Common Exploits | ✅ |
 
-Aba **SSL**:
+**Aba SSL:**
 
 | Campo | Valor |
 | --- | --- |
-| SSL Certificate | `*.maiahub.com.br` (o que acabamos de emitir) |
+| SSL Certificate | `npm.maiahub.com.br` |
 | Force SSL | ✅ |
 | HTTP/2 Support | ✅ |
 
-Aba **Access List**:
+**Aba Access List:**
 
 | Campo | Valor |
 | --- | --- |
 | Access List | `tailscale-only` |
 
-Salvar.
+Salvar e testar: `https://npm.maiahub.com.br` via Tailscale deve abrir com cadeado verde.
 
-Testar acessando `https://npm.maiahub.com.br` num dispositivo com Tailscale conectado — deve abrir o painel NPM com cadeado verde.
+---
 
-### 7.2 — Painel AdGuard
+## Etapa 8 — Emitir certificado: adguard.maiahub.com.br
+
+Repetir o processo da Etapa 6, alterando apenas o domain:
 
 | Campo | Valor |
 | --- | --- |
 | Domain Names | `adguard.maiahub.com.br` |
-| Scheme | `http` |
+
+O restante das configurações (Cloudflare, token, propagation) é idêntico.
+
+---
+
+## Etapa 9 — Criar proxy host: adguard.maiahub.com.br
+
+Repetir o processo da Etapa 7, com:
+
+| Campo | Valor |
+| --- | --- |
+| Domain Names | `adguard.maiahub.com.br` |
 | Forward Hostname/IP | `adguard` |
 | Forward Port | `3000` |
-| Block Common Exploits | ✅ |
+| SSL Certificate | `adguard.maiahub.com.br` |
 
-Aba **SSL**: mesmas configurações do NPM (certificado wildcard, Force SSL, HTTP/2).
-
-Aba **Access List**: `tailscale-only`.
-
-Salvar.
-
-Testar acessando `https://adguard.maiahub.com.br` via Tailscale.
+Testar: `https://adguard.maiahub.com.br` via Tailscale deve abrir o painel AdGuard com cadeado verde.
 
 ---
 
-## Etapa 8 — Atualizar DNS Rewrite no AdGuard
+## Etapa 10 — Remover porta 81 do compose.yaml
 
-As fases seguintes vão criar mais serviços. Adicionar os DNS Rewrites no AdGuard agora para não precisar voltar depois:
+> Somente após verificar que `https://npm.maiahub.com.br` está funcionando.
 
-`Filters → DNS rewrites → Add DNS rewrite`
+### 10.1 — Editar o compose.yaml localmente
 
-| Domain | Answer |
-| --- | --- |
-| `portainer.maiahub.com.br` | `{{OCI_PUBLIC_IP}}` |
-| `monitoring.maiahub.com.br` | `{{OCI_PUBLIC_IP}}` |
-| `netdata.maiahub.com.br` | `{{OCI_PUBLIC_IP}}` |
-| `jellyfin.maiahub.com.br` | `{{OCI_PUBLIC_IP}}` |
-| `dawarich.maiahub.com.br` | `{{OCI_PUBLIC_IP}}` |
+Remover a linha `- "81:81"` da seção `ports`:
 
-> Os rewrites `cloud.maiahub.com.br`, `adguard.maiahub.com.br` e `npm.maiahub.com.br` já foram criados na Fase 2.
+```yaml
+# Antes:
+ports:
+  - "80:80"
+  - "443:443"
+  - "81:81"
 
----
+# Depois:
+ports:
+  - "80:80"
+  - "443:443"
+```
 
-## Etapa 9 — Remover regra UFW temporária da Fase 2
-
-Na Fase 2, abrimos a porta 3000 diretamente para acessar o AdGuard via Tailscale. Com o NPM no ar e o proxy host criado, esse acesso direto não é mais necessário:
+### 10.2 — Commitar e aplicar na VM
 
 ```bash
-# Verificar o número da regra antes de deletar
+# Local
+git add services/proxy/compose.yaml
+git commit -m "feat(proxy): remove direct port 81 after proxy host verified"
+git push
+
+# VM
+cd /srv/the-forge/services/proxy
+git pull
+docker compose up -d
+```
+
+### 10.3 — Verificar
+
+```bash
+# Porta 81 não deve aparecer mais
+sudo ss -tulnp | grep ':81'
+
+# Proxy ainda funciona
+curl -sk https://npm.maiahub.com.br -o /dev/null -w "%{http_code}\n"
+# Deve retornar 200 ou 301
+```
+
+### 10.4 — Recuperação de emergência (se proxy host falhar)
+
+Se `https://npm.maiahub.com.br` parar de funcionar após remover a porta:
+
+```bash
+# Opção 1: acessar de dentro da VM
+ssh homelab
+curl http://localhost:81
+
+# Opção 2: adicionar porta temporariamente no compose
+# Editar compose.yaml na VM, adicionar de volta "81:81", subir com docker compose up -d
+# Diagnosticar, corrigir o proxy host, depois remover a porta novamente
+```
+
+---
+
+## Etapa 11 — Remover regra UFW da Fase 2
+
+Na Fase 2, a porta 3000 foi aberta diretamente para acesso ao AdGuard via Tailscale. Com o proxy host no ar, essa rota direta não é mais necessária.
+
+```bash
+# Ver as regras numeradas
 sudo ufw status numbered
 
-# Remover as regras da porta 3000 (identificar pelo número na listagem acima)
-# Exemplo — confirmar o número correto antes de executar:
-sudo ufw delete <número-da-regra-3000-tailscale>
-```
+# Identificar a regra da porta 3000 (algo como "allow from 100.64.0.0/10 to any port 3000")
+# Deletar pelo número
+sudo ufw delete <número>
 
-Após remover:
-
-```bash
-# Confirmar que a regra foi removida
+# Confirmar remoção
 sudo ufw status | grep 3000
 # Não deve aparecer nada
-```
 
-Testar que `https://adguard.maiahub.com.br` ainda funciona via Tailscale (acesso via proxy NPM).
-
----
-
-## Etapa 10 — Versionar
-
-```bash
-# Na máquina local, confirmar que nada sensível foi commitado
-cd ~/projetos/the-forge
-git status
-
-# O .gitignore já cobre letsencrypt/ e .env — confirmar visualmente
-git diff --cached
-
-# Não há arquivos novos para commitar nesta etapa (compose.yaml já foi commitado no passo 1.5)
-# Se tiver algum arquivo de config que foi ajustado:
-git add services/proxy/
-git commit -m "feat(proxy): bring up NPM with MariaDB and wildcard SSL
-
-- Wildcard cert *.maiahub.com.br via Cloudflare DNS Challenge
-- Access List tailscale-only: 100.64.0.0/10
-- Proxy hosts: npm.maiahub.com.br, adguard.maiahub.com.br
-- Direct UFW rule for AdGuard port 3000 removed"
-git push
+# Testar que AdGuard ainda funciona via proxy
+curl -sk https://adguard.maiahub.com.br -o /dev/null -w "%{http_code}\n"
 ```
 
 ---
 
 ## Checklist final da Fase 3
 
-### Containers
+### Container
 
-- [ ] `docker ps` mostra `npm` e `npm-db` com status `Up`
+- [ ] `docker ps` mostra `npm` com status `Up`
 - [ ] `docker logs npm --tail 30` sem erros críticos
-- [ ] `docker logs npm-db --tail 30` sem erros críticos
+- [ ] `sudo ss -tulnp | grep ':81'` não retorna nada (porta removida)
 
-### Certificado SSL
+### Certificados
 
-- [ ] Certificado `*.maiahub.com.br` listado em SSL Certificates com status válido
-- [ ] Data de expiração é 90 dias a partir de hoje (renovação automática configurada)
+- [ ] `npm.maiahub.com.br` listado em SSL Certificates com status válido
+- [ ] `adguard.maiahub.com.br` listado em SSL Certificates com status válido
+- [ ] Ambos com validade ~90 dias (renovação automática pelo NPM)
 
 ### Access List
 
-- [ ] Access List `tailscale-only` criada com `allow 100.64.0.0/10` e `deny all`
+- [ ] Access List `tailscale-only` criada com `allow 100.64.0.0/10` + `deny all`
 
 ### Proxy Hosts
 
 - [ ] `https://npm.maiahub.com.br` abre com cadeado verde via Tailscale
-- [ ] `https://npm.maiahub.com.br` retorna 403/bloqueado de IP fora do Tailscale
+- [ ] `https://npm.maiahub.com.br` retorna 403 de IP fora do Tailscale
 - [ ] `https://adguard.maiahub.com.br` abre com cadeado verde via Tailscale
-- [ ] `https://adguard.maiahub.com.br` retorna 403/bloqueado de IP fora do Tailscale
-
-### DNS
-
-- [ ] DNS Rewrites para fases futuras adicionados no AdGuard (portainer, monitoring, netdata, jellyfin, dawarich)
-- [ ] `dig @{{OCI_TS_IP}} npm.maiahub.com.br` retorna `{{OCI_PUBLIC_IP}}`
+- [ ] `https://adguard.maiahub.com.br` retorna 403 de IP fora do Tailscale
 
 ### Limpeza
 
-- [ ] Regra UFW da porta 3000 removida (`sudo ufw status` não mostra regra para 3000)
-- [ ] Acesso ao AdGuard via `https://adguard.maiahub.com.br` ainda funciona após remoção da regra
+- [ ] Porta 81 removida do compose.yaml e não aparece em `ss -tulnp`
+- [ ] Regra UFW porta 3000 removida (`ufw status` não mostra regra para 3000)
+- [ ] Acesso ao AdGuard ainda funciona via `https://adguard.maiahub.com.br`
 
 ### Repositório
 
-- [ ] `services/proxy/compose.yaml` commitado
-- [ ] `services/proxy/.env.example` commitado
+- [ ] `services/proxy/compose.yaml` commitado (sem porta 81)
 - [ ] `services/proxy/.gitignore` commitado
-- [ ] `services/proxy/letsencrypt/` **não** commitado (coberto pelo .gitignore)
-- [ ] `services/proxy/.env` **não** commitado
+- [ ] `services/proxy/data/` **não** commitado
+- [ ] `services/proxy/letsencrypt/` **não** commitado
 
 ---
 
 ## Referência rápida — Operações do NPM
 
 ```bash
-# Ver status dos containers
+# Status
 docker ps | grep npm
+docker logs npm --tail 50
 
-# Logs do NPM
-docker compose -f /srv/the-forge/services/proxy/compose.yaml logs -f --tail=50
-
-# Reiniciar NPM (sem derrubar MariaDB)
+# Reiniciar NPM
 docker restart npm
-
-# Reiniciar toda a stack
-cd /srv/the-forge/services/proxy && docker compose restart
 
 # Atualizar imagem
 cd /srv/the-forge/services/proxy
 docker compose pull && docker compose up -d
 
-# Verificar certificados no container
+# Verificar certificados
 docker exec npm ls /etc/letsencrypt/live/
 
-# Forçar renovação de certificado (normalmente automática)
-docker exec npm sh -c "cd /app && node index.js certbot renew"
+# Testar proxy host
+curl -sk https://npm.maiahub.com.br -o /dev/null -w "%{http_code}\n"
+curl -sk https://adguard.maiahub.com.br -o /dev/null -w "%{http_code}\n"
 
-# Ver regras UFW atuais
+# Ver regras UFW
 sudo ufw status numbered
 
-# Testar proxy host do terminal
-curl -sk https://npm.maiahub.com.br -o /dev/null -w "%{http_code}\n"
-# Deve retornar 200 (ou 301/302 para redirect) se vier de IP Tailscale
+# Acesso de emergência ao painel (se proxy falhar)
+# Adicionar temporariamente "81:81" no compose.yaml e docker compose up -d
 ```
 
 ---
@@ -516,12 +460,18 @@ curl -sk https://npm.maiahub.com.br -o /dev/null -w "%{http_code}\n"
 
 ### Fase 4 — Gerenciamento e Monitoramento (Portainer + Uptime Kuma + Netdata)
 
-Com o NPM no ar e o wildcard SSL configurado, as fases seguintes são diretas: subir o serviço, criar o proxy host no NPM e adicionar o monitor no Uptime Kuma (quando estiver no ar). O DNS Rewrite já foi criado nesta fase.
+Cada serviço que subir a partir daqui segue o mesmo padrão estabelecido nesta fase:
+
+1. Subir o container
+2. Adicionar DNS Rewrite no AdGuard para o domínio do serviço
+3. Emitir certificado individual via DNS Challenge no NPM
+4. Criar proxy host com SSL + Access List tailscale-only
+5. Commitar
 
 Fase 4 entrega:
-- **Portainer** — gerenciamento visual de containers via `portainer.maiahub.com.br`
-- **Uptime Kuma** — monitoramento de uptime e alertas via `monitoring.maiahub.com.br`
-- **Netdata** — métricas em tempo real do servidor via `netdata.maiahub.com.br`
+- **Portainer** — gerenciamento visual de containers (`portainer.maiahub.com.br`)
+- **Uptime Kuma** — monitoramento de uptime e alertas (`monitoring.maiahub.com.br`)
+- **Netdata** — métricas em tempo real do servidor (`netdata.maiahub.com.br`)
 
 ---
 

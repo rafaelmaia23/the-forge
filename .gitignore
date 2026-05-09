@@ -10,9 +10,7 @@ secrets/
 *.crt
 *.p12
 
-# Dados gerados pelos containers em runtime
-**/data/
-**/letsencrypt/
+# Logs (global — logs podem aparecer em qualquer lugar)
 **/*.log
 logs/
 
