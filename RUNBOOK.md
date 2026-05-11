@@ -244,16 +244,54 @@ sudo journalctl --vacuum-time=7d
 
 ---
 
+## Nginx Proxy Manager (NPM)
+
+```bash
+# Status
+docker ps | grep npm
+docker logs npm --tail 50
+
+# Reiniciar
+docker restart npm
+
+# Atualizar imagem
+cd /srv/the-forge/services/proxy
+docker compose pull && docker compose up -d
+
+# Verificar certificados
+docker exec npm ls /etc/letsencrypt/live/
+
+# Testar proxy hosts
+curl -sk https://npm.maiahub.com.br -o /dev/null -w "%{http_code}\n"
+curl -sk https://adguard.maiahub.com.br -o /dev/null -w "%{http_code}\n"
+```
+
+### Acesso de emergência ao painel NPM
+
+Se `https://npm.maiahub.com.br` parar de funcionar:
+
+```bash
+# Opção 1: acessar de dentro da VM
+ssh homelab
+curl http://localhost:81
+
+# Opção 2: adicionar porta temporariamente
+# Editar /srv/the-forge/services/proxy/compose.yaml na VM
+# Adicionar "- "81:81"" em ports, então:
+cd /srv/the-forge/services/proxy && docker compose up -d
+# Diagnosticar, corrigir o proxy host, depois remover a porta e docker compose up -d
+```
+
+---
+
 ## Serviços ativos por fase
 
-### Fase 1 — Fundação (atual)
-
-| Serviço | Tipo | Status |
-|---|---|---|
-| Docker | Sistema | ativo |
-| Tailscale | Rede | ativo — exit node |
-| WireGuard/Mullvad | Rede | ativo — `wg-mull-br` |
-| UFW | Firewall | ativo |
-| fail2ban | Segurança | ativo |
-
-### Fase 2+ — será atualizado conforme serviços subirem
+| Fase | Serviço | Container | Acesso |
+|---|---|---|---|
+| 1 | Docker | — | sistema |
+| 1 | Tailscale | — | exit node |
+| 1 | WireGuard/Mullvad | — | `wg-mull-br` |
+| 1 | UFW | — | firewall |
+| 1 | fail2ban | — | segurança |
+| 2 | AdGuard Home | `adguard` | `https://adguard.maiahub.com.br` |
+| 3 | Nginx Proxy Manager | `npm` | `https://npm.maiahub.com.br` |

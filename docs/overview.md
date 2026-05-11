@@ -99,7 +99,8 @@ Tailscale (WireGuard)
 VPS Oracle — Interface tailscale0
     │
     ├─► AdGuard Home [:53]
-    │       ├── Resolve *.srv.maiahub.com.br → IP público Oracle
+    │       ├── Resolve serviços tailscale-only → IP Tailscale da VPS ({{OCI_TS_IP}})
+    │       ├── Resolve serviços públicos → IP público Oracle ({{OCI_PUBLIC_IP}})
     │       ├── Filtra trackers e malware (OISD + AdGuard DNS filter)
     │       └── Upstream: Quad9 DoH (https://dns10.quad9.net/dns-query)
     │
@@ -121,8 +122,8 @@ IP Público Oracle [:443]
     │
     ▼
 Nginx Proxy Manager (NPM)
-    ├── cloud.srv.maiahub.com.br  → nextcloud:80
-    └── jellyfin.srv.maiahub.com.br → jellyfin:8096
+    ├── cloud.maiahub.com.br    → nextcloud:80
+    └── jellyfin.maiahub.com.br → jellyfin:8096
 ```
 
 ### Fluxo de tráfego — Painéis de controle (apenas Tailscale)
@@ -132,11 +133,11 @@ Dispositivo na rede Tailscale
     │
     ▼
 NPM — Access List "tailscale-only" (100.64.0.0/10)
-    ├── npm.srv.maiahub.com.br         → npm:81
-    ├── portainer.srv.maiahub.com.br   → portainer:9000
-    ├── adguard.srv.maiahub.com.br     → adguardhome:3000
-    ├── monitoring.srv.maiahub.com.br  → uptime-kuma:3001
-    └── netdata.srv.maiahub.com.br     → netdata:19999
+    ├── npm.maiahub.com.br         → npm:81
+    ├── portainer.maiahub.com.br   → portainer:9000
+    ├── adguard.maiahub.com.br     → adguardhome:3000
+    ├── monitoring.maiahub.com.br  → uptime-kuma:3001
+    └── netdata.maiahub.com.br     → netdata:19999
 ```
 
 ### Redes Docker
@@ -314,13 +315,15 @@ Thumbs.db
 | DNSSEC        | Desabilitado (Quad9 já valida)            |
 | Cache         | Habilitado                                |
 
-**DNS Rewrite (crítico):**
+**DNS Rewrites (crítico):**
 
 ```text
-*.srv.maiahub.com.br → <IP_PÚBLICO_ORACLE>
+Serviços tailscale-only → {{OCI_TS_IP}} (IP Tailscale da VPS)
+Serviços públicos       → {{OCI_PUBLIC_IP}} (IP público Oracle)
 ```
 
-Este rewrite faz todos os subdomínios do homelab resolverem para a VPS. **Deve ser o primeiro a ser atualizado ao trocar de IP.**
+Rewrites individuais por serviço — sem wildcards. Ver [ADR-007](decisions/ADR-007-dns-split-tailscale-public.md).
+**Ao trocar o IP da VPS, atualizar todos os rewrites que apontam para o IP antigo.**
 
 **Blocklists recomendadas:**
 
@@ -343,14 +346,14 @@ Este rewrite faz todos os subdomínios do homelab resolverem para a VPS. **Deve 
 
 | Domínio                         | Backend             | Acesso         | Notas     |
 | ------------------------------- | ------------------- | -------------- | --------- |
-| `cloud.srv.maiahub.com.br`      | `nextcloud:80`      | Público        | Force SSL |
-| `jellyfin.srv.maiahub.com.br`   | `jellyfin:8096`     | Público        | Force SSL |
-| `npm.srv.maiahub.com.br`        | `npm:81`            | Tailscale only |           |
-| `portainer.srv.maiahub.com.br`  | `portainer:9000`    | Tailscale only |           |
-| `adguard.srv.maiahub.com.br`    | `adguardhome:3000`  | Tailscale only |           |
-| `monitoring.srv.maiahub.com.br` | `uptime-kuma:3001`  | Tailscale only |           |
-| `netdata.srv.maiahub.com.br`    | `netdata:19999`     | Tailscale only |           |
-| `dawarich.srv.maiahub.com.br`   | `dawarich-app:3000` | Tailscale only |           |
+| `cloud.maiahub.com.br`      | `nextcloud:80`      | Público        | Force SSL |
+| `jellyfin.maiahub.com.br`   | `jellyfin:8096`     | Público        | Force SSL |
+| `npm.maiahub.com.br`        | `npm:81`            | Tailscale only |           |
+| `portainer.maiahub.com.br`  | `portainer:9000`    | Tailscale only |           |
+| `adguard.maiahub.com.br`    | `adguardhome:3000`  | Tailscale only |           |
+| `monitoring.maiahub.com.br` | `uptime-kuma:3001`  | Tailscale only |           |
+| `netdata.maiahub.com.br`    | `netdata:19999`     | Tailscale only |           |
+| `dawarich.maiahub.com.br`   | `dawarich-app:3000` | Tailscale only |           |
 
 **Access List "tailscale-only":**
 
@@ -627,7 +630,7 @@ A estratégia usa ferramentas diferentes para cada tipo de dado, cada uma escolh
 | --------------------------------------------------- | ----------- | ------- | -------------- | ------------------------ |
 | Arquivos Nextcloud (`/mnt/data/nextcloud/userdata`) | Restic      | B2      | Diário         | Sim — snapshots por data |
 | Banco Nextcloud (PostgreSQL dump)                   | Restic      | B2      | Diário         | Sim                      |
-| Banco NPM (MariaDB dump)                            | Restic      | B2      | Diário         | Sim                      |
+| SQLite NPM (`services/proxy/data/`)                 | Restic      | B2      | Diário         | Sim (bind mount direto)  |
 | Certificados Let's Encrypt                          | Restic      | B2      | Semanal        | Sim                      |
 | Configuração AdGuard (`adguard_conf/`)              | Restic      | B2      | Semanal        | Sim                      |
 | Configurações dos serviços (`/srv/`)                | Git         | GitHub  | A cada mudança | Sim (histórico Git)      |
@@ -695,19 +698,17 @@ log "Dump PostgreSQL (Nextcloud)..."
 docker exec nextcloud-db pg_dump -U nextcloud nextcloud \
   > "$BACKUP_DIR/nextcloud_db.sql"
 
-# 2. Dump MariaDB — NPM
-log "Dump MariaDB (NPM)..."
-docker exec npm-db mysqldump -u root -p"$NPM_DB_ROOT_PASSWORD" npm \
-  > "$BACKUP_DIR/npm_db.sql"
+# 2. NPM usa SQLite — coberto diretamente pelo Restic via bind mount ./data
+# Não é necessário dump; o arquivo .sqlite fica em services/proxy/data/
 
 # 3. Backup Restic — arquivos Nextcloud + dumps de banco
 log "Restic backup → Backblaze B2..."
 restic -r "$RESTIC_REPOSITORY" backup \
   /mnt/data/nextcloud/userdata \
   "$BACKUP_DIR/nextcloud_db.sql" \
-  "$BACKUP_DIR/npm_db.sql" \
-  /srv/services/dns/adguard_conf/ \
-  /srv/services/proxy/letsencrypt/ \
+  /srv/the-forge/services/proxy/data/ \
+  /srv/the-forge/services/proxy/letsencrypt/ \
+  /srv/the-forge/services/dns/config/ \
   --exclude "*.part" \
   --exclude "*.log" \
   --tag "daily" \
@@ -769,7 +770,7 @@ cat > /etc/homelab-backup.env << 'EOF'
 export RESTIC_PASSWORD="<senha-forte-gerada-com-openssl>"
 export B2_ACCOUNT_ID="<backblaze-account-id>"
 export B2_ACCOUNT_KEY="<backblaze-application-key>"
-export NPM_DB_ROOT_PASSWORD="<senha-mariadb>"
+export NPM_ADMIN_PASSWORD="<senha-admin-npm>"
 EOF
 chmod 600 /etc/homelab-backup.env
 
@@ -882,25 +883,29 @@ Backup não testado é backup inválido. Mensalmente:
 
 ---
 
-### Fase 2 — DNS (AdGuard Home)
+### Fase 2 — DNS (AdGuard Home) ✅
 
-- [ ] **2.1** Subir AdGuard: `cd /srv/services/dns && docker compose up -d`
-- [ ] **2.2** Configurar upstream DNS (Quad9 DoH), blocklists (AdGuard + OISD)
-- [ ] **2.3** Configurar DNS Rewrite: `*.srv.maiahub.com.br → <IP_PÚBLICO_ORACLE>`
-- [ ] **2.4** Testar resolução: `dig @<IP_TAILSCALE_ORACLE> cloud.srv.maiahub.com.br`
-- [ ] **2.5** No painel Tailscale Admin: definir VPS Oracle como nameserver global
-- [ ] **2.6** Validar que dispositivos pessoais estão consultando o novo DNS
+- [x] **2.1** Subir AdGuard: `cd /srv/the-forge/services/dns && docker compose up -d`
+- [x] **2.2** Configurar upstream DNS (Quad9 DoH), blocklists (AdGuard + OISD)
+- [x] **2.3** Configurar DNS Rewrites individuais por serviço (sem wildcard)
+- [x] **2.4** Testar resolução: `dig @{{OCI_TS_IP}} cloud.maiahub.com.br`
+- [x] **2.5** No painel Tailscale Admin: definir VPS Oracle como nameserver global
+- [x] **2.6** Validar que dispositivos pessoais estão consultando o novo DNS
 
 ---
 
-### Fase 3 — Proxy Reverso (NPM)
+### Fase 3 — Proxy Reverso (NPM) ✅
 
-- [ ] **3.1** Subir NPM: `cd /srv/services/proxy && docker compose up -d`
-- [ ] **3.2** Acessar painel via IP direto inicialmente (`:81`)
-- [ ] **3.3** Emitir certificado wildcard `*.srv.maiahub.com.br` via DNS Challenge (Cloudflare)
-- [ ] **3.4** Criar Access List "tailscale-only": allow `100.64.0.0/10`
-- [ ] **3.5** Criar proxy host para o próprio NPM: `npm.srv.maiahub.com.br` (com Access List)
-- [ ] **3.6** Adicionar demais proxy hosts conforme tabela da seção 6.2 (à medida que os serviços sobem)
+- [x] **3.1** Subir NPM: `cd /srv/the-forge/services/proxy && docker compose up -d`
+- [x] **3.2** Acessar painel via IP direto inicialmente (`:81`)
+- [x] **3.3** Emitir certificados individuais via DNS Challenge (Cloudflare): `npm.maiahub.com.br` e `adguard.maiahub.com.br`
+- [x] **3.4** Criar Access List "tailscale-only": allow `100.64.0.0/10`
+- [x] **3.5** Criar proxy host para o próprio NPM: `npm.maiahub.com.br` (com Access List)
+- [x] **3.6** Criar proxy host para AdGuard: `adguard.maiahub.com.br` (com Access List)
+- [x] **3.7** Atualizar DNS Rewrites tailscale-only para `{{OCI_TS_IP}}` no AdGuard
+- [x] **3.8** Remover porta 81 do compose NPM e porta 3000 do compose AdGuard
+- [x] **3.9** Remover regra UFW porta 3000
+- [ ] **3.10** Adicionar demais proxy hosts conforme tabela da seção 6.2 (à medida que os serviços sobem)
 
 ---
 

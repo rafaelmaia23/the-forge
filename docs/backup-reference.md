@@ -47,7 +47,7 @@ Serve de insumo para os scripts e a automação da **Fase 8** (Restic + Rclone +
 | O que | Onde na VM | Categoria | Observação |
 | --- | --- | --- | --- |
 | Compose + gitignore NPM | `/srv/the-forge/services/proxy/` | Git ✓ | Versionado no repositório |
-| SQLite DB do NPM | `/srv/the-forge/services/proxy/data/` | Crítico | Contém toda a configuração: proxy hosts, access lists, usuários, referências a certs. Perda = reconfigurar tudo manualmente no painel |
+| SQLite DB do NPM | `/srv/the-forge/services/proxy/data/` | Crítico | Contém toda a configuração: proxy hosts, access lists, usuários, referências a certs. Perda = reconfigurar tudo manualmente no painel. Não precisa de dump — bind mount coberto diretamente pelo Restic |
 | Certificados SSL | `/srv/the-forge/services/proxy/letsencrypt/` | Importante | Auto-renováveis via Let's Encrypt, mas backup evita downtime durante reconfiguração. Perda = reemitir certs e reiniciar NPM |
 | Senha admin NPM | `~/.homelab/secrets.env` | Crítico | Já coberto pelo item de segredos da Fase 1 |
 

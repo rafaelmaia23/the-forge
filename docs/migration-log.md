@@ -171,8 +171,63 @@ O `cat /etc/resolv.conf` continua mostrando `127.0.0.53` (stub do systemd-resolv
 
 ---
 
+---
+
+## 2026-05-11 — Fase 3: Nginx Proxy Manager
+
+### O que foi feito
+
+- Container NPM subido (`jc21/nginx-proxy-manager:latest`), portas 80/443/81
+- Configuração inicial: conta admin criada, senha salva em `~/.homelab/secrets.env`
+- Access List `tailscale-only` criada: allow `100.64.0.0/10`, deny all
+- Certificados individuais emitidos via DNS Challenge (Cloudflare API):
+  - `npm.maiahub.com.br`
+  - `adguard.maiahub.com.br`
+- Proxy hosts criados com SSL + Access List tailscale-only para ambos os domínios
+- Porta 81 removida do `compose.yaml` do NPM após verificar acesso via proxy
+- Porta 3000 removida do `compose.yaml` do AdGuard (mesma lógica — NPM faz o proxy)
+- Regra UFW `allow from 100.64.0.0/10 to any port 3000` removida
+- DNS Rewrites no AdGuard atualizados para IP Tailscale da VPS:
+  - `npm.maiahub.com.br` → `{{OCI_TS_IP}}`
+  - `adguard.maiahub.com.br` → `{{OCI_TS_IP}}`
+
+### Desvio do plano: DNS split por nível de acesso
+
+O plano original previa um wildcard `*.maiahub.com.br → {{OCI_PUBLIC_IP}}` para todos
+os serviços. Ao testar o acesso sem exit node ativo, `https://npm.maiahub.com.br`
+retornava 403 Forbidden: o DNS resolvia para o IP público, a requisição saía pela
+internet real com o IP do dispositivo, e a Access List bloqueava corretamente.
+
+**Solução:** domínios tailscale-only resolvem para `{{OCI_TS_IP}}` no AdGuard. Com isso,
+a conexão flui dentro do Tailscale e o NPM vê o IP Tailscale do cliente — passando na
+Access List sem precisar do exit node ativo. Serviços públicos continuarão com DNS para
+`{{OCI_PUBLIC_IP}}`.
+
+Decisão formalizada em [ADR-007](decisions/ADR-007-dns-split-tailscale-public.md).
+
+### Padrão estabelecido para fases seguintes
+
+Cada novo serviço segue este padrão:
+
+1. Subir o container com seu `compose.yaml`
+2. Criar DNS Rewrite no AdGuard:
+   - Tailscale-only → `{{OCI_TS_IP}}`
+   - Público → `{{OCI_PUBLIC_IP}}`
+3. Emitir certificado individual via DNS Challenge no NPM
+4. Criar proxy host com SSL + Access List (tailscale-only) ou sem Access List (público)
+5. Commitar
+
+### Configurações criadas fora do repositório
+
+| Onde | O que |
+| --- | --- |
+| `~/.homelab/secrets.env` | Senha admin NPM |
+| AdGuard DNS Rewrites | `npm.maiahub.com.br` e `adguard.maiahub.com.br` → `{{OCI_TS_IP}}` |
+
+---
+
 - **Fase 2** ✅ — AdGuard Home: DNS privado com bloqueio de trackers
-- **Fase 3** — Nginx Proxy Manager: proxy reverso com SSL wildcard
+- **Fase 3** ✅ — Nginx Proxy Manager: proxy reverso com SSL e access lists
 - **Fase 4** — Portainer + Uptime Kuma + Netdata: gerenciamento e monitoramento
 - **Fase 5** — Nextcloud: migração dos dados da Hostinger
 - **Fase 6** — Jellyfin + Arr Stack: servidor de mídia
