@@ -7,6 +7,51 @@ Formato: [Keep a Changelog](https://keepachangelog.com)
 
 ## [Unreleased]
 
+## [v1.2-proxy] — 2026-05-11
+
+### Added
+
+- Nginx Proxy Manager como ponto de entrada único para tráfego HTTP/HTTPS
+- Certificados SSL individuais via DNS Challenge (Cloudflare API) para `npm.maiahub.com.br` e `adguard.maiahub.com.br`
+- Access List `tailscale-only` (allow `100.64.0.0/10`, deny all) para painéis de controle
+- Proxy host `npm.maiahub.com.br` → `npm:81` com SSL Force + HTTP/2 + Access List
+- Proxy host `adguard.maiahub.com.br` → `adguardhome:3000` com SSL Force + HTTP/2 + Access List
+- `.gitignore` em `services/proxy/` cobrindo `data/` e `letsencrypt/`
+
+### Changed
+
+- Porta `81` removida do `compose.yaml` do NPM após proxy host verificado
+- Porta `3000` removida do `compose.yaml` do AdGuard (acessível via proxy)
+- DNS Rewrites dos serviços tailscale-only atualizados de `{{OCI_PUBLIC_IP}}` → `{{OCI_TS_IP}}`
+- Regra UFW `allow from 100.64.0.0/10 to any port 3000` removida
+
+### ADRs
+
+- ADR-007: DNS split por nível de acesso (tailscale-only resolve para `{{OCI_TS_IP}}`, público para `{{OCI_PUBLIC_IP}}`)
+
+---
+
+## [v1.1-dns] — 2026-05-06
+
+### Added
+
+- AdGuard Home como servidor DNS privado para todos os dispositivos da rede Tailscale
+- Upstream DNS: Quad9 DoH (`dns10.quad9.net`) + Cloudflare DoH em modo paralelo
+- Bootstrap DNS: `9.9.9.10`, `149.112.112.10`, `1.1.1.1`
+- Blocklists: AdGuard DNS filter + OISD Full (`big.oisd.nl`)
+- DNS Rewrites individuais por serviço (sem wildcards) — ver ADR-007
+- Override DNS global ativado no painel Tailscale Admin (nameserver = IP Tailscale da VPS)
+- Systemd service `tailscale-docker-forward`: `ip rule to 172.16.0.0/12 priority 5200` + `DOCKER-USER ACCEPT` para roteamento Tailscale→containers Docker
+- Stub listener do systemd-resolved desativado (`/etc/systemd/resolved.conf.d/no-stub.conf`)
+- `.gitignore` em `services/dns/` e `AdGuardHome.yaml` versionado em `services/dns/config/`
+
+### ADRs
+
+- ADR-006: Tailscale Docker routing — `ip rule to 172.16.0.0/12 priority 5200` para evitar pacotes DNATados serem roteados pelo Mullvad VPN
+- ADR-007: DNS split por nível de acesso (contexto inicial — wildcard substituído por rewrites individuais)
+
+---
+
 ## [v1.0-foundation] — 2026-05-05
 
 ### Added
