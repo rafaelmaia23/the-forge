@@ -169,10 +169,13 @@ filtering:
       answer: 147.15.126.217
       enabled: true
     - domain: adguard.maiahub.com.br
-      answer: 147.15.126.217
+      answer: 100.120.15.48
       enabled: true
     - domain: npm.maiahub.com.br
-      answer: 147.15.126.217
+      answer: 100.120.15.48
+      enabled: true
+    - domain: portainer.maiahub.com.br
+      answer: 100.120.15.48
       enabled: true
   safe_fs_patterns:
     - /opt/adguardhome/work/userfilters/*
