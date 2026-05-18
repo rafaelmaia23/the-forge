@@ -1,0 +1,5 @@
+# Dados do Uptime Kuma (configuração de monitores, histórico de uptime, banco SQLite)
+data/
+
+# Dados do Netdata (configurações, banco de métricas, cache)
+netdata-data/
