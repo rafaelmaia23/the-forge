@@ -7,6 +7,32 @@ Formato: [Keep a Changelog](https://keepachangelog.com)
 
 ## [Unreleased]
 
+## [v1.3-management] — 2026-05-18
+
+### Added
+
+- Portainer CE em `portainer.maiahub.com.br` — gerenciamento visual de containers e stacks
+- Uptime Kuma em `monitoring.maiahub.com.br` — 8 monitores de uptime configurados
+- Netdata em `netdata.maiahub.com.br` — métricas de sistema em tempo real (CPU, RAM, disco, rede, containers)
+- Certificados SSL individuais via DNS Challenge para `portainer.maiahub.com.br`, `monitoring.maiahub.com.br`, `netdata.maiahub.com.br`
+- Proxy hosts no NPM com Access List `tailscale-only` para os três serviços
+- IP fixo `172.18.0.2` para o container `adguard` via `ipv4_address` no compose — evita IP dinâmico que quebraria o monitor DNS
+- `dns: [172.18.0.2]` no compose do Uptime Kuma — permite resolver domínios internos via AdGuard sem hairpin NAT
+- Notificações Telegram no Uptime Kuma e no Netdata; Uptime Kuma também com email
+- Stacks `dns`, `proxy` e `monitoring` registradas no Portainer
+
+### Changed
+
+- `services/dns/compose.yaml` — adicionado `ipv4_address: 172.18.0.2` para IP fixo do AdGuard
+- `services/monitoring/compose.yaml` — adicionado `dns: [172.18.0.2]` ao Uptime Kuma
+- Porta `9000` removida do compose do Portainer após proxy verificado
+
+### ADRs
+
+- ADR-008: Uptime Kuma usa endereçamento Docker interno (container names/IPs) por causa do hairpin NAT do Docker (`! -i <bridge>` bloqueia DNAT de containers para IPs externos do host)
+
+---
+
 ## [v1.2-proxy] — 2026-05-11
 
 ### Added

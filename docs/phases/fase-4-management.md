@@ -15,8 +15,8 @@
 Ao final desta fase:
 
 - **Portainer CE** rodando em `portainer.maiahub.com.br` — gerencia todos os containers do host e todas as stacks registradas a partir do repositório Git
-- **Uptime Kuma** rodando em `monitoring.maiahub.com.br` — monitora disponibilidade dos serviços ativos e envia alertas por email
-- **Netdata** rodando em `netdata.maiahub.com.br` — métricas em tempo real de CPU, RAM, disco, rede e containers, com alertas de sistema configurados
+- **Uptime Kuma** rodando em `monitoring.maiahub.com.br` — monitora disponibilidade dos serviços ativos e envia alertas por email e Telegram
+- **Netdata** rodando em `netdata.maiahub.com.br` — métricas em tempo real de CPU, RAM, disco, rede e containers, com alertas por Telegram configurados
 - Stacks `dns` e `proxy` registradas no Portainer (visão unificada de todos os serviços)
 - Porta 9000 removida do compose Portainer após proxy verificado
 
@@ -32,7 +32,7 @@ Ao final desta fase:
 | Netdata modo | Standalone (local) | Zero dependência externa; métricas não saem da VM; 1h de alta resolução cobre o caso de uso principal |
 | Netdata alertas | Configurados via `health_alarm_notify.conf` | Complementa o Uptime Kuma: Kuma monitora disponibilidade HTTP/DNS, Netdata monitora recursos de sistema |
 | Uptime Kuma + Netdata | Um único `compose.yaml` em `services/monitoring/` | Ambos são serviços de monitoramento sem interdependência que exija isolamento |
-| Notificações Uptime Kuma | Email SMTP | Universal, sem dependência de serviços de terceiros para alertas |
+| Notificações | Email SMTP + Telegram | Email para compatibilidade universal; Telegram para conveniência; Netdata usa apenas Telegram (sem suporte SMTP direto — depende de sendmail) |
 | Certificados | Um por serviço via DNS Challenge | Padrão estabelecido na Fase 3 — consistência em todo o homelab |
 
 ---
@@ -128,6 +128,8 @@ services:
     image: louislam/uptime-kuma:1
     container_name: uptime-kuma
     restart: unless-stopped
+    dns:
+      - 172.18.0.2
     volumes:
       - ./data:/app/data
     networks:
@@ -165,6 +167,10 @@ networks:
     external: true
 EOF
 ```
+
+**Por que `dns: [172.18.0.2]` no Uptime Kuma:**
+
+O Uptime Kuma precisa resolver domínios internos (`maiahub.com.br`) para alguns tipos de monitor. Por causa do hairpin NAT do Docker, containers não conseguem consultar o AdGuard via o IP externo do host — a query precisa ir direto ao IP do container `adguard` dentro da mesma bridge. O `172.18.0.2` é o IP fixo atribuído ao AdGuard via `ipv4_address` no seu compose (ver `services/dns/compose.yaml`). Ver [ADR-008](../decisions/ADR-008-uptime-kuma-hairpin-nat.md) para análise completa.
 
 **Por que o Netdata precisa de `cap_add` e `security_opt`:**
 
@@ -545,7 +551,27 @@ Clicar em **Test** antes de salvar para confirmar o envio.
 
 > Para Gmail: criar um App Password em `myaccount.google.com → Security → 2-Step Verification → App passwords`. Usar essa senha em vez da senha normal.
 
-### 9.3 — Adicionar monitores
+### 9.3 — Configurar notificação por Telegram
+
+`Settings → Notifications → Setup Notification`
+
+| Campo | Valor |
+| --- | --- |
+| Notification Type | Telegram |
+| Friendly Name | `Telegram Homelab` |
+| Bot Token | `{{NETDATA_TELEGRAM_BOT_TOKEN}}` (mesmo bot do Netdata) |
+| Chat ID | `{{TELEGRAM_CHAT_ID}}` |
+
+Clicar em **Test** para confirmar. Ao criar cada monitor, habilitar ambas as notificações.
+
+### 9.4 — Adicionar monitores
+
+> **Por que usar endereços internos Docker:**
+> O Uptime Kuma roda como container na mesma rede `proxy` que os outros serviços.
+> Por uma restrição do Docker (hairpin NAT), containers não conseguem atingir outros
+> containers via o IP externo do host — o DNAT não dispara para tráfego da mesma bridge.
+> A solução é usar o container name diretamente (mesma rede, sem NAT) ou o IP do container.
+> Ver [ADR-008](../decisions/ADR-008-uptime-kuma-hairpin-nat.md) para análise completa.
 
 Para cada monitor: `Add New Monitor`
 
@@ -571,15 +597,23 @@ Para cada monitor: `Add New Monitor`
 
 **AdGuard — DNS**
 
+Antes de criar este monitor, obter o IP do container `adguard` na rede `proxy`:
+
+```bash
+docker inspect adguard --format '{{.NetworkSettings.Networks.proxy.IPAddress}}'
+```
+
 | Campo | Valor |
 | --- | --- |
 | Monitor Type | DNS |
 | Friendly Name | `AdGuard DNS` |
-| Hostname | `{{OCI_TS_IP}}` |
-| Resolver Server | `{{OCI_TS_IP}}` |
-| Resolver Port | `53` |
+| Hostname | `npm.maiahub.com.br` |
+| Resolver Server | IP do container `adguard` (ex: `172.18.0.x`) |
+| Port | `53` |
 | Record Type | `A` |
-| Value | nome qualquer (ex: `npm.maiahub.com.br`) |
+
+> **Atenção:** O Resolver Server é o IP do container, não o IP Tailscale. Se o container
+> `adguard` for recriado, o IP pode mudar — atualizar o monitor nesse caso.
 
 **AdGuard painel**
 
@@ -587,8 +621,7 @@ Para cada monitor: `Add New Monitor`
 | --- | --- |
 | Monitor Type | HTTP(s) |
 | Friendly Name | `AdGuard — painel` |
-| URL | `https://adguard.maiahub.com.br` |
-| Accepted Status Codes | `200-299` |
+| URL | `http://adguard:3000` |
 
 **NPM painel**
 
@@ -596,7 +629,7 @@ Para cada monitor: `Add New Monitor`
 | --- | --- |
 | Monitor Type | HTTP(s) |
 | Friendly Name | `NPM — painel` |
-| URL | `https://npm.maiahub.com.br` |
+| URL | `http://npm:81` |
 
 **Portainer**
 
@@ -604,7 +637,7 @@ Para cada monitor: `Add New Monitor`
 | --- | --- |
 | Monitor Type | HTTP(s) |
 | Friendly Name | `Portainer` |
-| URL | `https://portainer.maiahub.com.br` |
+| URL | `http://portainer:9000` |
 
 **Netdata**
 
@@ -612,7 +645,7 @@ Para cada monitor: `Add New Monitor`
 | --- | --- |
 | Monitor Type | HTTP(s) |
 | Friendly Name | `Netdata` |
-| URL | `https://netdata.maiahub.com.br` |
+| URL | `http://netdata:19999` |
 
 **Uptime Kuma (self-monitor)**
 
@@ -620,50 +653,48 @@ Para cada monitor: `Add New Monitor`
 | --- | --- |
 | Monitor Type | HTTP(s) |
 | Friendly Name | `Uptime Kuma` |
-| URL | `https://monitoring.maiahub.com.br` |
+| URL | `http://uptime-kuma:3001` |
 
 ---
 
-## Etapa 10 — Configurar alertas do Netdata
+## Etapa 10 — Alertas do Netdata
 
-O Netdata já vem com dezenas de alertas pré-configurados. Nesta etapa, habilitamos o envio por email.
+O Netdata já vem com dezenas de alertas pré-configurados que ficam visíveis no dashboard. Esta etapa é **opcional** — o Uptime Kuma já cobre os alertas de disponibilidade de serviços por email, e o Netdata agrega valor principalmente pelo dashboard de métricas em tempo real.
+
+> **Nota sobre email no Netdata:** O Netdata não tem cliente SMTP próprio — ele depende do `sendmail` do sistema operacional. Dentro de um container Docker sem MTA instalado, o envio de email por essa rota não funciona sem customização da imagem (instalação do `msmtp`). Para este homelab, manter `SEND_EMAIL="NO"` e usar o Uptime Kuma para alertas é a abordagem mais simples.
 
 ### 10.1 — Localizar o arquivo de configuração
 
-O arquivo `health_alarm_notify.conf` é gerado no primeiro start do Netdata em `./netdata-data/config/`:
+O arquivo `health_alarm_notify.conf` não é gerado automaticamente — precisa ser copiado de dentro do container:
 
 ```bash
-# Na VM
-ls /srv/the-forge/services/monitoring/netdata-data/config/
-# Deve conter health_alarm_notify.conf (gerado pelo Netdata no primeiro start)
-
-# Se não existir ainda, gerar a partir do padrão:
 docker exec netdata bash -c \
   "cp /usr/lib/netdata/conf.d/health_alarm_notify.conf /etc/netdata/health_alarm_notify.conf"
 ```
 
-### 10.2 — Configurar envio por email
+### 10.2 — Configurar notificação Telegram
+
+Antes de editar o arquivo, você precisa de um bot Telegram e do seu Chat ID:
+
+1. Fale com o [@BotFather](https://t.me/botfather) no Telegram → `/newbot` → guarde o token
+2. Mande uma mensagem para o bot criado
+3. Abra `https://api.telegram.org/bot<SEU_TOKEN>/getUpdates` no browser e copie o `"id"` dentro de `"chat"`
 
 ```bash
 # Editar o arquivo diretamente na VM
 nano /srv/the-forge/services/monitoring/netdata-data/config/health_alarm_notify.conf
 ```
 
-Localizar e editar as seções:
+Localizar e ajustar as seções de email e Telegram:
 
 ```bash
-# Habilitar email
-SEND_EMAIL="YES"
+# Email — desabilitar (Netdata usa sendmail, não SMTP direto)
+SEND_EMAIL="NO"
 
-# Configurar SMTP (mesmo servidor do Uptime Kuma)
-EMAIL_SENDER="seu@email.com"
-DEFAULT_RECIPIENT_EMAIL="seu@email.com"
-
-# Para Gmail com App Password:
-SMTP_SERVER="smtp.gmail.com"
-SMTP_PORT="587"
-SMTP_USER="seu@email.com"
-SMTP_PASS="<app_password>"
+# Telegram — habilitar
+SEND_TELEGRAM="YES"
+TELEGRAM_BOT_TOKEN="{{NETDATA_TELEGRAM_BOT_TOKEN}}"
+DEFAULT_RECIPIENT_TELEGRAM="{{TELEGRAM_CHAT_ID}}"
 ```
 
 ### 10.3 — Reiniciar para aplicar
@@ -672,17 +703,13 @@ SMTP_PASS="<app_password>"
 docker restart netdata
 ```
 
-### 10.4 — Testar o envio
+### 10.4 — Testar notificação
 
 ```bash
-docker exec netdata /usr/libexec/netdata/plugins.d/alarm-notify.sh test
+docker exec netdata /usr/libexec/netdata/plugins.d/alarm-notify.sh test telegram
 ```
 
-Deve chegar um email de teste com assunto `NETDATA TEST ALARM`. Se não chegar, verificar os logs:
-
-```bash
-docker logs netdata --tail 50 | grep -i alarm
-```
+Deve chegar uma mensagem no Telegram com `NETDATA TEST ALARM`.
 
 ### 10.5 — Alertas padrão relevantes para o homelab
 
@@ -699,9 +726,14 @@ O Netdata vem com estes alertas ativados por padrão (entre muitos outros):
 Para verificar os alertas ativos:
 
 ```bash
-# Ver todos os alertas configurados
-docker exec netdata netdatacli alarms
+# Alertas em WARNING ou CRITICAL agora
+docker exec netdata curl -s 'http://localhost:19999/api/v1/alarms' | python3 -m json.tool | grep -E '"status"|"name"|"chart"'
+
+# Todos os alertas configurados (incluindo OK)
+docker exec netdata curl -s 'http://localhost:19999/api/v1/alarms?all' | python3 -m json.tool | grep -E '"status"|"name"'
 ```
+
+O dashboard em `https://netdata.maiahub.com.br` → aba **Alerts** também mostra tudo de forma visual.
 
 ---
 
@@ -709,44 +741,45 @@ docker exec netdata netdatacli alarms
 
 ### Portainer
 
-- [ ] `docker ps` mostra `portainer` com status `Up`
-- [ ] `https://portainer.maiahub.com.br` abre com cadeado verde via Tailscale
-- [ ] `https://portainer.maiahub.com.br` retorna 403 de IP fora do Tailscale
-- [ ] Ambiente local configurado — aba `local` mostra todos os containers do host
-- [ ] `sudo ss -tulnp | grep ':9000'` não retorna nada (porta removida)
-- [ ] Stacks registradas no Portainer: `dns`, `proxy`
+- [x] `docker ps` mostra `portainer` com status `Up`
+- [x] `https://portainer.maiahub.com.br` abre com cadeado verde via Tailscale
+- [x] `https://portainer.maiahub.com.br` retorna 403 de IP fora do Tailscale
+- [x] Ambiente local configurado — aba `local` mostra todos os containers do host
+- [x] `sudo ss -tulnp | grep ':9000'` não retorna nada (porta removida)
+- [x] Stacks registradas no Portainer: `dns`, `proxy`
 
 ### Uptime Kuma
 
-- [ ] `docker ps` mostra `uptime-kuma` com status `Up`
-- [ ] `https://monitoring.maiahub.com.br` abre com cadeado verde via Tailscale
-- [ ] Notificação email configurada e testada (email de teste recebido)
-- [ ] Monitores criados (8 monitors): NPM :80, NPM :443, AdGuard DNS, AdGuard painel, NPM painel, Portainer, Netdata, Uptime Kuma
-- [ ] Todos os monitores com status verde
+- [x] `docker ps` mostra `uptime-kuma` com status `Up`
+- [x] `https://monitoring.maiahub.com.br` abre com cadeado verde via Tailscale
+- [x] Notificação email configurada e testada
+- [x] Notificação Telegram configurada e testada
+- [x] Monitores criados (8 monitors): NPM :80, NPM :443, AdGuard DNS, AdGuard painel, NPM painel, Portainer, Netdata, Uptime Kuma
+- [x] Todos os monitores com status verde
 
 ### Netdata
 
-- [ ] `docker ps` mostra `netdata` com status `Up`
-- [ ] `https://netdata.maiahub.com.br` abre com cadeado verde via Tailscale
-- [ ] Dashboard exibe métricas em tempo real (CPU, RAM, rede, containers)
-- [ ] `health_alarm_notify.conf` configurado com SMTP
-- [ ] Teste de alarme enviado com sucesso (`alarm-notify.sh test`)
+- [x] `docker ps` mostra `netdata` com status `Up`
+- [x] `https://netdata.maiahub.com.br` abre com cadeado verde via Tailscale
+- [x] Dashboard exibe métricas em tempo real (CPU, RAM, rede, containers)
+- [x] `health_alarm_notify.conf` copiado, `SEND_EMAIL="NO"` e Telegram configurado
+- [x] Teste de alerta Telegram recebido (`alarm-notify.sh test telegram`)
 
 ### Certificados
 
-- [ ] `portainer.maiahub.com.br` listado em SSL Certificates com status válido
-- [ ] `monitoring.maiahub.com.br` listado em SSL Certificates com status válido
-- [ ] `netdata.maiahub.com.br` listado em SSL Certificates com status válido
+- [x] `portainer.maiahub.com.br` listado em SSL Certificates com status válido
+- [x] `monitoring.maiahub.com.br` listado em SSL Certificates com status válido
+- [x] `netdata.maiahub.com.br` listado em SSL Certificates com status válido
 
 ### Repositório
 
-- [ ] `services/management/compose.yaml` commitado (sem porta 9000)
-- [ ] `services/management/.gitignore` commitado
-- [ ] `services/management/data/` **não** commitado
-- [ ] `services/monitoring/compose.yaml` commitado
-- [ ] `services/monitoring/.gitignore` commitado
-- [ ] `services/monitoring/data/` **não** commitado
-- [ ] `services/monitoring/netdata-data/` **não** commitado
+- [x] `services/management/compose.yaml` commitado (sem porta 9000)
+- [x] `services/management/.gitignore` commitado
+- [x] `services/management/data/` **não** commitado
+- [x] `services/monitoring/compose.yaml` commitado
+- [x] `services/monitoring/.gitignore` commitado
+- [x] `services/monitoring/data/` **não** commitado
+- [x] `services/monitoring/netdata-data/` **não** commitado
 
 ---
 
@@ -790,13 +823,13 @@ docker compose pull && docker compose up -d
 docker ps | grep netdata
 docker logs netdata --tail 50
 
-# Ver alertas ativos
-docker exec netdata netdatacli alarms
+# Ver alertas ativos (WARNING/CRITICAL)
+docker exec netdata curl -s 'http://localhost:19999/api/v1/alarms' | python3 -m json.tool | grep -E '"status"|"name"|"chart"'
 
-# Testar notificação de alerta
-docker exec netdata /usr/libexec/netdata/plugins.d/alarm-notify.sh test
+# Testar notificação Telegram
+docker exec netdata /usr/libexec/netdata/plugins.d/alarm-notify.sh test telegram
 
-# Editar configuração de alertas
+# Editar configuração de alertas (Telegram)
 nano /srv/the-forge/services/monitoring/netdata-data/config/health_alarm_notify.conf
 docker restart netdata
 

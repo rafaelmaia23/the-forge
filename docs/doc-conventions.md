@@ -25,6 +25,8 @@ ou identificadores únicos de infraestrutura.**
 | IP da rede pessoal | `187.x.x.x` | `{{MEU_IP}}` |
 | API token Cloudflare | `abc123...` | `{{CF_API_TOKEN}}` |
 | Zone ID Cloudflare | `def456...` | `{{CF_ZONE_ID}}` |
+| Token bot Telegram (Netdata) | `123456:ABCdef...` | `{{NETDATA_TELEGRAM_BOT_TOKEN}}` |
+| Chat ID Telegram | `987654321` | `{{TELEGRAM_CHAT_ID}}` |
 
 ### O que NÃO precisa sanitizar
 

@@ -909,13 +909,13 @@ Backup não testado é backup inválido. Mensalmente:
 
 ---
 
-### Fase 4 — Gerenciamento e Monitoramento
+### Fase 4 — Gerenciamento e Monitoramento ✅
 
-- [ ] **4.1** Subir Portainer: `cd /srv/services/management && docker compose up -d`
-- [ ] **4.2** Configurar proxy host no NPM (tailscale-only)
-- [ ] **4.3** Subir Uptime Kuma + Netdata: `cd /srv/services/monitoring && docker compose up -d`
-- [ ] **4.4** Configurar monitores no Uptime Kuma para cada serviço
-- [ ] **4.5** Configurar alertas (Telegram recomendado — fácil de configurar via bot)
+- [x] **4.1** Subir Portainer: `cd /srv/the-forge/services/management && docker compose up -d`
+- [x] **4.2** Configurar proxy hosts no NPM (tailscale-only) para Portainer, Uptime Kuma e Netdata
+- [x] **4.3** Subir Uptime Kuma + Netdata: `cd /srv/the-forge/services/monitoring && docker compose up -d`
+- [x] **4.4** Configurar 8 monitores no Uptime Kuma (container names/IPs internos — ver ADR-008)
+- [x] **4.5** Configurar alertas Telegram no Uptime Kuma e Netdata; email adicional no Uptime Kuma
 
 ---
 

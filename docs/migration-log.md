@@ -226,9 +226,79 @@ Cada novo serviço segue este padrão:
 
 ---
 
+---
+
+## 2026-05-18 — Fase 4: Gerenciamento e Monitoramento
+
+### O que foi feito
+
+- Portainer CE subido em `services/management/compose.yaml`
+- Conta admin criada, ambiente `local` configurado (Docker socket montado)
+- Stacks `dns` e `proxy` registradas no Portainer (repositório Git, sem Automatic Updates)
+- Certificados SSL emitidos via DNS Challenge para `portainer.maiahub.com.br`, `monitoring.maiahub.com.br`, `netdata.maiahub.com.br`
+- Proxy hosts criados no NPM com Access List `tailscale-only` para os três domínios
+- Porta `9000` removida do compose do Portainer após proxy verificado
+- `services/dns/compose.yaml` atualizado: IP fixo `172.18.0.2` para o container `adguard` via `ipv4_address`
+- `services/monitoring/compose.yaml` atualizado: `dns: [172.18.0.2]` no Uptime Kuma para resolução de domínios internos via AdGuard
+- Uptime Kuma e Netdata subidos em `services/monitoring/compose.yaml`
+- Stack `monitoring` registrada no Portainer
+- 8 monitores configurados no Uptime Kuma com notificação email e Telegram
+- Netdata configurado com alertas por Telegram via `health_alarm_notify.conf` (`SEND_EMAIL="NO"`, `SEND_TELEGRAM="YES"`)
+- Descoberto que Netdata não suporta SMTP direto — depende de `sendmail`; Telegram via API HTTP funciona sem MTA
+- DNS Rewrites adicionados no AdGuard para os três novos serviços → `{{OCI_TS_IP}}`
+
+### Desvio: monitors do Uptime Kuma via endereçamento Docker interno
+
+O guia previa monitors HTTP(s) usando os domínios públicos (`https://npm.maiahub.com.br`, `https://adguard.maiahub.com.br`). Durante a configuração, todos os monitors mostraram status "down" com erros `ENOTFOUND` e `ETIMEOUT`.
+
+**Diagnóstico:**
+
+O Uptime Kuma roda como container na rede Docker `proxy`. Para resolver `npm.maiahub.com.br` via DNS, o container precisaria consultar o AdGuard — que também está na mesma rede `proxy`, com porta 53 publicada no host. O bloqueio acontece no **hairpin NAT do Docker**:
+
+As regras de DNAT geradas pelo Docker para portas publicadas incluem `! -i <bridge>` — ou seja, o DNAT **não dispara** para tráfego que sai pela mesma bridge de onde veio. Isso afeta qualquer container que tente atingir outro container via o IP externo do host (Tailscale, público ou gateway da bridge), mesmo que ambos estejam na mesma rede.
+
+Consequências práticas:
+1. **DNS**: container tenta consultar AdGuard via `{{OCI_TS_IP}}:53`. O DNAT não dispara (`! -i br-proxy`). A query vai para `tailscale0` e desaparece → `ETIMEOUT`
+2. **HTTP**: sem resolver DNS, não consegue conectar aos domínios `maiahub.com.br` → `ENOTFOUND`
+
+Tentativas que não funcionaram:
+- Adicionar subnet Docker (`172.18.0.0/16`) ao Access List do NPM — DNS já falhava antes de chegar ao NPM
+- Usar o gateway da bridge (`172.18.0.1`) como DNS — mesma restrição `! -i br-proxy`
+- Usar `{{OCI_TS_IP}}` como Resolver Server no monitor DNS — mesmo problema
+
+**Solução aplicada:**
+
+Como todos os serviços estão na mesma rede Docker `proxy`, o Uptime Kuma acessa os containers diretamente pelo nome ou IP interno — sem DNS externo, sem passar pelo NPM, sem hairpin NAT:
+
+| Monitor | Tipo | Endereço usado | Motivo |
+| --- | --- | --- | --- |
+| NPM — HTTP :80 | TCP Port | `{{OCI_PUBLIC_IP}}:80` | Porta pública — sem Access List no nível TCP |
+| NPM — HTTPS :443 | TCP Port | `{{OCI_PUBLIC_IP}}:443` | Idem |
+| AdGuard DNS | DNS | Resolver = IP container `adguard` | Mesmo bridge, sem DNAT |
+| AdGuard — painel | HTTP(s) | `http://adguard:3000` | Container name, mesma rede |
+| NPM — painel | HTTP(s) | `http://npm:81` | Idem |
+| Portainer | HTTP(s) | `http://portainer:9000` | Idem |
+| Netdata | HTTP(s) | `http://netdata:19999` | Idem |
+| Uptime Kuma | HTTP(s) | `http://uptime-kuma:3001` | Idem |
+
+Para o monitor DNS do AdGuard: o campo `Resolver Server` usa o IP do container `adguard` na rede `proxy` (obtido via `docker inspect adguard --format '{{.NetworkSettings.Networks.proxy.IPAddress}}'`), não o IP Tailscale. Dentro da mesma bridge, o pacote vai direto ao container sem DNAT.
+
+Ver [ADR-008](decisions/ADR-008-uptime-kuma-hairpin-nat.md) para análise completa.
+
+### Configurações criadas fora do repositório
+
+| Onde | O que |
+| --- | --- |
+| `~/.homelab/secrets.env` | Senhas admin do Portainer e do Uptime Kuma |
+| AdGuard DNS Rewrites | `portainer.maiahub.com.br`, `monitoring.maiahub.com.br`, `netdata.maiahub.com.br` → `{{OCI_TS_IP}}` |
+| Uptime Kuma | 8 monitores configurados; notificações email e Telegram |
+| Netdata | `health_alarm_notify.conf`: `SEND_EMAIL="NO"`, `SEND_TELEGRAM="YES"` com bot Telegram |
+
+---
+
 - **Fase 2** ✅ — AdGuard Home: DNS privado com bloqueio de trackers
 - **Fase 3** ✅ — Nginx Proxy Manager: proxy reverso com SSL e access lists
-- **Fase 4** — Portainer + Uptime Kuma + Netdata: gerenciamento e monitoramento
+- **Fase 4** ✅ — Portainer + Uptime Kuma + Netdata: gerenciamento e monitoramento
 - **Fase 5** — Nextcloud: migração dos dados da Hostinger
 - **Fase 6** — Jellyfin + Arr Stack: servidor de mídia
 - **Fase 7** — Dawarich: histórico de localização

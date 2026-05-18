@@ -16,7 +16,8 @@ Portainer, Uptime Kuma, Netdata, Dawarich. VPN dupla: Tailscale (rede privada) +
 - ✅ Fase 1 — Fundação Oracle Cloud
 - ✅ Fase 2 — AdGuard Home (DNS)
 - ✅ Fase 3 — Nginx Proxy Manager (guia em `docs/phases/fase-3-proxy-npm.md`)
-- ⏳ Fases 4–9 — pendentes
+- ✅ Fase 4 — Portainer + Uptime Kuma + Netdata (guia em `docs/phases/fase-4-management.md`)
+- ⏳ Fases 5–9 — pendentes
 
 ---
 

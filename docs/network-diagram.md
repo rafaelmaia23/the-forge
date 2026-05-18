@@ -1,7 +1,7 @@
 # Diagrama de Rede — Estado atual
 
-**Atualizado em:** 2026-05-06
-**Versão:** v1.1-dns
+**Atualizado em:** 2026-05-18
+**Versão:** v1.4-management
 
 ---
 
@@ -29,8 +29,12 @@ Dispositivos pessoais (celular / PC / notebook)
 │    tráfego da própria VM     → enp0s6 (rota padrão intacta)  │
 │    range 100.64.0.0/10       → tailscale0 (não sai pela VPN) │
 │                                                              │
-│  Docker:                                                     │
-│    rede proxy (bridge) — AdGuard Home ativo [:53, :3000]                                       │
+│  Docker (rede proxy — bridge 172.18.0.0/16):                  │
+│    adguard       [:53 pub, :3000 interno]  DNS + bloqueio   │
+│    npm           [:80 pub, :443 pub, :81 interno]  proxy    │
+│    portainer     [:9000 interno]           gerenciamento     │
+│    uptime-kuma   [:3001 interno]           monitoramento     │
+│    netdata       [:19999 interno]          métricas          │
 │                                                              │
 │  Storage:                                                    │
 │    /dev/sda → boot volume 50 GB  → /                        │
@@ -97,12 +101,24 @@ VM → enp0s6 → Internet (IP Oracle, rota padrão)
 
 ## Redes Docker ativas
 
-| Rede | Driver | Escopo | Propósito |
-|------|--------|--------|-----------|
-| proxy | bridge | local | Compartilhada por todos os serviços acessados pelo NPM |
+| Rede | Subnet | Driver | Containers |
+|------|--------|--------|------------|
+| proxy | `172.18.0.0/16` | bridge | adguard, npm, portainer, uptime-kuma, netdata |
 
 > Redes internas de cada stack (nextcloud_internal, media_internal etc.)
 > serão criadas nas fases seguintes, quando os serviços subirem.
+
+## Serviços e acesso
+
+| Serviço | Container | Acesso externo | Acesso interno |
+|---------|-----------|----------------|----------------|
+| AdGuard Home | `adguard` | `https://adguard.maiahub.com.br` (tailscale-only) | `http://adguard:3000` |
+| Nginx Proxy Manager | `npm` | `https://npm.maiahub.com.br` (tailscale-only) | `http://npm:81` |
+| Portainer | `portainer` | `https://portainer.maiahub.com.br` (tailscale-only) | `http://portainer:9000` |
+| Uptime Kuma | `uptime-kuma` | `https://monitoring.maiahub.com.br` (tailscale-only) | `http://uptime-kuma:3001` |
+| Netdata | `netdata` | `https://netdata.maiahub.com.br` (tailscale-only) | `http://netdata:19999` |
+
+> **Nota de monitoramento:** O Uptime Kuma acessa todos os serviços via endereço interno Docker (container name ou IP), não via domínio. Ver [ADR-008](decisions/ADR-008-uptime-kuma-hairpin-nat.md).
 
 ---
 
@@ -117,8 +133,6 @@ VM → enp0s6 → Internet (IP Oracle, rota padrão)
 
 ## O que ainda não está ativo nesta fase
 
-- Nginx Proxy Manager — Fase 3
-- Portainer / Uptime Kuma / Netdata — Fase 4
 - Nextcloud — Fase 5
 - Jellyfin + Arr Stack — Fase 6
 - Dawarich — Fase 7
