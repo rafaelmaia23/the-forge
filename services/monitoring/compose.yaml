@@ -3,6 +3,8 @@ services:
     image: louislam/uptime-kuma:1
     container_name: uptime-kuma
     restart: unless-stopped
+    dns:
+      - 172.18.0.2
     volumes:
       - ./data:/app/data
     networks:

@@ -10,7 +10,8 @@ services:
       - ./config:/opt/adguardhome/conf
       - ./data:/opt/adguardhome/work
     networks:
-      - proxy
+      proxy:
+        ipv4_address: 172.18.0.2
 
 networks:
   proxy:
