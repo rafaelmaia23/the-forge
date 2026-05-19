@@ -1,0 +1,131 @@
+services:
+  nextcloud:
+    image: nextcloud:31-apache
+    container_name: nextcloud
+    restart: unless-stopped
+    depends_on:
+      nextcloud-db:
+        condition: service_healthy
+      nextcloud-redis:
+        condition: service_started
+    environment:
+      - POSTGRES_HOST=nextcloud-db
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - REDIS_HOST=nextcloud-redis
+      - REDIS_HOST_PASSWORD=${REDIS_HOST_PASSWORD}
+      - NEXTCLOUD_ADMIN_USER=${NEXTCLOUD_ADMIN_USER}
+      - NEXTCLOUD_ADMIN_PASSWORD=${NEXTCLOUD_ADMIN_PASSWORD}
+      - NEXTCLOUD_TRUSTED_DOMAINS=${NEXTCLOUD_TRUSTED_DOMAINS}
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES}
+      - OVERWRITEPROTOCOL=https
+      - OVERWRITECLIURL=https://cloud.maiahub.com.br
+      - NC_default_phone_region=BR
+    volumes:
+      - nextcloud_config:/var/www/html/config
+      - nextcloud_apps:/var/www/html/apps
+      - /mnt/data/nextcloud/userdata:/var/www/html/data
+    networks:
+      - proxy
+      - nextcloud_internal
+
+  nextcloud-db:
+    image: postgres:17
+    container_name: nextcloud-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - nextcloud_db:/var/lib/postgresql/data
+    networks:
+      - nextcloud_internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nextcloud-redis:
+    image: redis:7-alpine
+    container_name: nextcloud-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_HOST_PASSWORD}
+    volumes:
+      - nextcloud_redis:/data
+    networks:
+      - nextcloud_internal
+
+  nextcloud-collabora:
+    image: collabora/code:latest
+    container_name: nextcloud-collabora
+    restart: unless-stopped
+    environment:
+      - server_name=office.maiahub.com.br
+      - aliasgroup1=https://cloud.maiahub.com.br:443
+      - DONT_GEN_SSL_CERT=YES
+      - extra_params=--o:ssl.enable=false --o:ssl.termination=true
+    networks:
+      - proxy
+      - nextcloud_internal
+
+  nextcloud-elasticsearch:
+    image: elasticsearch:8
+    container_name: nextcloud-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    volumes:
+      - nextcloud_elasticsearch:/usr/share/elasticsearch/data
+    networks:
+      - nextcloud_internal
+
+  nextcloud-clamav:
+    image: clamav/clamav:latest
+    container_name: nextcloud-clamav
+    restart: unless-stopped
+    networks:
+      - nextcloud_internal
+
+  # Sidecar do notify_push — reinicia até o app ser instalado no Nextcloud (comportamento esperado)
+  nextcloud-notify-push:
+    image: nextcloud:31-apache
+    container_name: nextcloud-notify-push
+    restart: unless-stopped
+    entrypoint: /var/www/html/apps/notify_push/bin/aarch64/notify_push
+    command: /var/www/html/config/config.php
+    environment:
+      - PORT=7867
+      - NEXTCLOUD_URL=http://nextcloud
+    volumes:
+      - nextcloud_config:/var/www/html/config:ro
+      - nextcloud_apps:/var/www/html/apps:ro
+    depends_on:
+      - nextcloud
+    networks:
+      - proxy
+      - nextcloud_internal
+
+  nextcloud-imaginary:
+    image: nextcloud/aio-imaginary:latest
+    container_name: nextcloud-imaginary
+    restart: unless-stopped
+    networks:
+      - nextcloud_internal
+
+volumes:
+  nextcloud_config:
+  nextcloud_apps:
+  nextcloud_db:
+  nextcloud_redis:
+  nextcloud_elasticsearch:
+
+networks:
+  proxy:
+    external: true
+  nextcloud_internal:
+    internal: true
