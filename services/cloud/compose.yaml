@@ -1,6 +1,6 @@
 services:
   nextcloud:
-    image: nextcloud:31-apache
+    image: nextcloud:33-apache
     container_name: nextcloud
     restart: unless-stopped
     depends_on:
@@ -31,7 +31,7 @@ services:
       - nextcloud_internal
 
   nextcloud-db:
-    image: postgres:17
+    image: postgres:18
     container_name: nextcloud-db
     restart: unless-stopped
     environment:
@@ -72,13 +72,13 @@ services:
       - nextcloud_internal
 
   nextcloud-elasticsearch:
-    image: elasticsearch:8
+    image: elasticsearch:9
     container_name: nextcloud-elasticsearch
     restart: unless-stopped
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
-      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+      - ES_JAVA_OPTS=-Xms1g -Xmx2g
     volumes:
       - /mnt/data/nextcloud/elasticsearch:/usr/share/elasticsearch/data
     networks:
@@ -93,7 +93,7 @@ services:
 
   # Sidecar do notify_push — reinicia até o app ser instalado no Nextcloud (comportamento esperado)
   nextcloud-notify-push:
-    image: nextcloud:31-apache
+    image: nextcloud:33-apache
     container_name: nextcloud-notify-push
     restart: unless-stopped
     entrypoint: /var/www/html/apps/notify_push/bin/aarch64/notify_push

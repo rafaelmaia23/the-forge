@@ -14,7 +14,7 @@
 
 Ao final desta fase:
 
-- **Nextcloud 31** rodando em `cloud.maiahub.com.br` (público — acessível sem Tailscale)
+- **Nextcloud 33** rodando em `cloud.maiahub.com.br` (público — acessível sem Tailscale)
 - **Collabora** rodando em `office.maiahub.com.br` (público — edição de documentos online)
 - **PostgreSQL 17** como banco de dados principal
 - **Redis** para cache de sessão e file locking com autenticação
@@ -37,11 +37,11 @@ Ao final desta fase:
 | Decisão | Escolha | Motivo |
 | --- | --- | --- |
 | Stack | Manual (containers separados) | Controle de versão, debugging granular, compatibilidade com backup Fase 8. Ver ADR-009 |
-| Nextcloud version | `nextcloud:31-apache` | Versão major atual — suporte mais longo; fixar para controlar upgrades |
-| PostgreSQL version | `postgres:17` | Versão mais nova — upgrades de major version são manuais, melhor escolher o mais novo agora |
+| Nextcloud version | `nextcloud:33-apache` | Versão major atual — suporte mais longo; fixar para controlar upgrades |
+| PostgreSQL version | `postgres:18` | Versão mais nova — upgrades de major version são manuais, melhor escolher o mais novo agora |
 | Redis | Com senha (`REDIS_HOST_PASSWORD`) | Boa prática mesmo em rede interna Docker |
 | Collabora | `office.maiahub.com.br` — público | Namorada pode editar documentos sem Tailscale |
-| Elasticsearch heap | `1g/1g` | 24 GB disponíveis — 1 GB para ES é equilibrado com os demais serviços |
+| Elasticsearch heap | `1g/2g` | 24 GB disponíveis — ES 9 com heap maior para indexação full-text; equilibrado com os demais serviços |
 | ClamAV conexão | TCP `:3310` | Socket Unix não é compartilhável entre containers Docker |
 | Imaginary | `nextcloud/aio-imaginary` | ARM64 nativo; `h2non/imaginary` não tem build ARM64 e falha silenciosamente |
 | Notify Push | Sidecar ARM64 | Binário extraído da imagem Nextcloud; reinicia até o app ser instalado (esperado) |
@@ -120,7 +120,7 @@ O arquivo `services/cloud/compose.yaml` já está no repositório. Conteúdo de 
 ```yaml
 services:
   nextcloud:
-    image: nextcloud:31-apache
+    image: nextcloud:33-apache
     container_name: nextcloud
     restart: unless-stopped
     depends_on:
@@ -151,7 +151,7 @@ services:
       - nextcloud_internal
 
   nextcloud-db:
-    image: postgres:17
+    image: postgres:18
     container_name: nextcloud-db
     restart: unless-stopped
     environment:
@@ -192,7 +192,7 @@ services:
       - nextcloud_internal
 
   nextcloud-elasticsearch:
-    image: elasticsearch:8
+    image: elasticsearch:9
     container_name: nextcloud-elasticsearch
     restart: unless-stopped
     environment:
@@ -213,7 +213,7 @@ services:
 
   # Sidecar do notify_push — reinicia até o app ser instalado no Nextcloud (comportamento esperado)
   nextcloud-notify-push:
-    image: nextcloud:31-apache
+    image: nextcloud:33-apache
     container_name: nextcloud-notify-push
     restart: unless-stopped
     entrypoint: /var/www/html/apps/notify_push/bin/aarch64/notify_push
