@@ -23,8 +23,8 @@ services:
       - OVERWRITECLIURL=https://cloud.maiahub.com.br
       - NC_default_phone_region=BR
     volumes:
-      - nextcloud_config:/var/www/html/config
-      - nextcloud_apps:/var/www/html/apps
+      - /mnt/data/nextcloud/config:/var/www/html/config
+      - /mnt/data/nextcloud/apps:/var/www/html/apps
       - /mnt/data/nextcloud/userdata:/var/www/html/data
     networks:
       - proxy
@@ -39,7 +39,7 @@ services:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     volumes:
-      - nextcloud_db:/var/lib/postgresql/data
+      - /mnt/data/nextcloud/db:/var/lib/postgresql/data
     networks:
       - nextcloud_internal
     healthcheck:
@@ -54,7 +54,7 @@ services:
     restart: unless-stopped
     command: redis-server --requirepass ${REDIS_HOST_PASSWORD}
     volumes:
-      - nextcloud_redis:/data
+      - /mnt/data/nextcloud/redis:/data
     networks:
       - nextcloud_internal
 
@@ -80,7 +80,7 @@ services:
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms1g -Xmx1g
     volumes:
-      - nextcloud_elasticsearch:/usr/share/elasticsearch/data
+      - /mnt/data/nextcloud/elasticsearch:/usr/share/elasticsearch/data
     networks:
       - nextcloud_internal
 
@@ -102,8 +102,8 @@ services:
       - PORT=7867
       - NEXTCLOUD_URL=http://nextcloud
     volumes:
-      - nextcloud_config:/var/www/html/config:ro
-      - nextcloud_apps:/var/www/html/apps:ro
+      - /mnt/data/nextcloud/config:/var/www/html/config:ro
+      - /mnt/data/nextcloud/apps:/var/www/html/apps:ro
     depends_on:
       - nextcloud
     networks:
@@ -116,13 +116,6 @@ services:
     restart: unless-stopped
     networks:
       - nextcloud_internal
-
-volumes:
-  nextcloud_config:
-  nextcloud_apps:
-  nextcloud_db:
-  nextcloud_redis:
-  nextcloud_elasticsearch:
 
 networks:
   proxy:

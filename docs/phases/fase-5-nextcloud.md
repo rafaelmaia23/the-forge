@@ -46,7 +46,7 @@ Ao final desta fase:
 | Imaginary | `nextcloud/aio-imaginary` | ARM64 nativo; `h2non/imaginary` não tem build ARM64 e falha silenciosamente |
 | Notify Push | Sidecar ARM64 | Binário extraído da imagem Nextcloud; reinicia até o app ser instalado (esperado) |
 | Coturn | Não incluído | Videochamadas via Talk não fazem parte do plano atual |
-| Dados de usuário | Bind mount em `/mnt/data/nextcloud/userdata` | Arquivo no block volume Oracle — separado do sistema e incluso nos backups |
+| Dados de usuário | Bind mounts em `/mnt/data/nextcloud/*` | Todos os volumes (config, apps, db, redis, elasticsearch, userdata) no block volume Oracle de 150 GB — separados do disco de boot, inclusos nos backups, e crescem automaticamente quando o block volume é expandido |
 | Redes Docker | `proxy` (externa) + `nextcloud_internal` (interna) | Isola serviços internos; apenas nextcloud, collabora e notify_push ficam expostos ao NPM |
 
 ---
@@ -143,8 +143,8 @@ services:
       - OVERWRITECLIURL=https://cloud.maiahub.com.br
       - NC_default_phone_region=BR
     volumes:
-      - nextcloud_config:/var/www/html/config
-      - nextcloud_apps:/var/www/html/apps
+      - /mnt/data/nextcloud/config:/var/www/html/config
+      - /mnt/data/nextcloud/apps:/var/www/html/apps
       - /mnt/data/nextcloud/userdata:/var/www/html/data
     networks:
       - proxy
@@ -159,7 +159,7 @@ services:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     volumes:
-      - nextcloud_db:/var/lib/postgresql/data
+      - /mnt/data/nextcloud/db:/var/lib/postgresql/data
     networks:
       - nextcloud_internal
     healthcheck:
@@ -174,7 +174,7 @@ services:
     restart: unless-stopped
     command: redis-server --requirepass ${REDIS_HOST_PASSWORD}
     volumes:
-      - nextcloud_redis:/data
+      - /mnt/data/nextcloud/redis:/data
     networks:
       - nextcloud_internal
 
@@ -200,7 +200,7 @@ services:
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms1g -Xmx1g
     volumes:
-      - nextcloud_elasticsearch:/usr/share/elasticsearch/data
+      - /mnt/data/nextcloud/elasticsearch:/usr/share/elasticsearch/data
     networks:
       - nextcloud_internal
 
@@ -222,8 +222,8 @@ services:
       - PORT=7867
       - NEXTCLOUD_URL=http://nextcloud
     volumes:
-      - nextcloud_config:/var/www/html/config:ro
-      - nextcloud_apps:/var/www/html/apps:ro
+      - /mnt/data/nextcloud/config:/var/www/html/config:ro
+      - /mnt/data/nextcloud/apps:/var/www/html/apps:ro
     depends_on:
       - nextcloud
     networks:
@@ -236,13 +236,6 @@ services:
     restart: unless-stopped
     networks:
       - nextcloud_internal
-
-volumes:
-  nextcloud_config:
-  nextcloud_apps:
-  nextcloud_db:
-  nextcloud_redis:
-  nextcloud_elasticsearch:
 
 networks:
   proxy:
@@ -311,15 +304,19 @@ ssh homelab
 cd /srv/the-forge && git pull
 ```
 
-### 2.1 — Criar diretório de dados no block volume
+### 2.1 — Criar diretórios no block volume
+
+Todos os volumes da stack usam bind mounts em `/mnt/data/nextcloud/`. O Docker não cria subdiretórios automaticamente — criar antes de subir a stack:
 
 ```bash
-mkdir -p /mnt/data/nextcloud/userdata
+sudo mkdir -p /mnt/data/nextcloud/{config,apps,userdata,db,redis,elasticsearch}
 
-# Verificar que o diretório está no block volume (não no boot volume)
+# Verificar que estão no block volume (não no boot volume)
 df -h /mnt/data/nextcloud/
-# Deve mostrar o device do block volume (ex: /dev/sdb ou /dev/vdb) com 150GB
+# Deve mostrar o device do block volume (ex: /dev/sdb ou /dev/vdb) com 150 GB
 ```
+
+> **Expansão futura:** quando o block volume de 150 GB encher, aumentar no console da Oracle e estender o filesystem (`sudo growpart /dev/sdb 1 && sudo resize2fs /dev/sdb1` ou `sudo xfs_growfs /mnt/data` se for XFS). Nenhuma reconfiguração no Nextcloud é necessária — os containers já enxergam o espaço extra.
 
 ### 2.2 — Criar o .env real
 
