@@ -205,7 +205,7 @@ services:
       - nextcloud_internal
 
   nextcloud-clamav:
-    image: clamav/clamav:latest
+    image: clamav/clamav-debian:latest
     container_name: nextcloud-clamav
     restart: unless-stopped
     networks:
