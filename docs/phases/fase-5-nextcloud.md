@@ -159,7 +159,7 @@ services:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     volumes:
-      - /mnt/data/nextcloud/db:/var/lib/postgresql/data
+      - /mnt/data/nextcloud/db:/var/lib/postgresql
     networks:
       - nextcloud_internal
     healthcheck:
