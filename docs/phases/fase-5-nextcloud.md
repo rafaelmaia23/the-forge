@@ -192,7 +192,7 @@ services:
       - nextcloud_internal
 
   nextcloud-elasticsearch:
-    image: elasticsearch:9
+    image: docker.elastic.co/elasticsearch/elasticsearch:9
     container_name: nextcloud-elasticsearch
     restart: unless-stopped
     environment:
