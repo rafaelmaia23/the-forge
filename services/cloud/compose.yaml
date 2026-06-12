@@ -27,6 +27,8 @@ services:
       - /mnt/data/nextcloud/apps:/var/www/html/apps
       - /mnt/data/nextcloud/custom_apps:/var/www/html/custom_apps
       - /mnt/data/nextcloud/userdata:/var/www/html/data
+    extra_hosts:
+      - "cloud.maiahub.com.br:172.18.0.3"
     networks:
       - proxy
       - nextcloud_internal
