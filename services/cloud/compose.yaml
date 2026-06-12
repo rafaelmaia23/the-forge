@@ -71,6 +71,8 @@ services:
       - aliasgroup1=https://cloud.maiahub.com.br:443
       - DONT_GEN_SSL_CERT=YES
       - extra_params=--o:ssl.enable=false --o:ssl.termination=true
+    extra_hosts:
+      - "cloud.maiahub.com.br:172.18.0.3"
     networks:
       - proxy
       - nextcloud_internal
