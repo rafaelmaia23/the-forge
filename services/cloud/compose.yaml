@@ -25,6 +25,7 @@ services:
     volumes:
       - /mnt/data/nextcloud/config:/var/www/html/config
       - /mnt/data/nextcloud/apps:/var/www/html/apps
+      - /mnt/data/nextcloud/custom_apps:/var/www/html/custom_apps
       - /mnt/data/nextcloud/userdata:/var/www/html/data
     networks:
       - proxy
@@ -96,14 +97,14 @@ services:
     image: nextcloud:33-apache
     container_name: nextcloud-notify-push
     restart: unless-stopped
-    entrypoint: /var/www/html/apps/notify_push/bin/aarch64/notify_push
+    entrypoint: /var/www/html/custom_apps/notify_push/bin/aarch64/notify_push
     command: /var/www/html/config/config.php
     environment:
       - PORT=7867
       - NEXTCLOUD_URL=http://nextcloud
     volumes:
       - /mnt/data/nextcloud/config:/var/www/html/config:ro
-      - /mnt/data/nextcloud/apps:/var/www/html/apps:ro
+      - /mnt/data/nextcloud/custom_apps:/var/www/html/custom_apps:ro
     depends_on:
       - nextcloud
     networks:
