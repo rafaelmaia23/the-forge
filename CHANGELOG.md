@@ -7,6 +7,38 @@ Formato: [Keep a Changelog](https://keepachangelog.com)
 
 ## [Unreleased]
 
+## [v1.4-nextcloud] — 2026-06-12
+
+### Added
+
+- Nextcloud 33 em `cloud.maiahub.com.br` — cloud pessoal público (acessível sem Tailscale)
+- Collabora CODE em `office.maiahub.com.br` — edição de documentos online
+- PostgreSQL 18 como banco de dados principal
+- Redis 7 para cache de sessão e file locking com autenticação
+- Elasticsearch 9.4.2 para busca full-text dentro de arquivos
+- ClamAV (`clamav-debian`) para antivírus de uploads via TCP
+- Notify Push (sidecar aarch64) para notificações em tempo real nos apps mobile
+- Imaginary para geração de thumbnails de imagem
+- Apps: `contacts`, `calendar`, `deck`, `tasks`, `notes`, `news`, `whiteboard`, `richdocuments`, `fulltextsearch` + connectors, `files_antivirus`, `notify_push`, `dav_push`, `suspicious_login`, `admin_audit`
+- `/data/nginx/custom/server_proxy.conf` no NPM — roteamento `/push` com WebSocket e rewrite de prefixo
+- Certificados SSL para `cloud.maiahub.com.br` e `office.maiahub.com.br` via DNS Challenge (Cloudflare)
+- DNS Rewrites no AdGuard para ambos os domínios → `{{OCI_PUBLIC_IP}}`
+- Parâmetros de kernel: `vm.overcommit_memory=1` e `vm.max_map_count=262144` em `/etc/sysctl.conf`
+- `docs/nextcloud-config-reference.md` — referência de configuração atual da stack
+
+### Changed
+
+- `services/cloud/compose.yaml` — `custom_apps` adicionado como bind mount separado (apps instalados via occ)
+- `services/cloud/compose.yaml` — `extra_hosts` para `cloud.maiahub.com.br` → IP interno do NPM (fix hairpin NAT para notify_push)
+- `services/cloud/compose.yaml` — notify_push entrypoint e volume atualizados de `apps/` para `custom_apps/`
+- `trusted_domains` do Nextcloud inclui `nextcloud` (container name) para notify_push conectar internamente
+
+### ADRs
+
+- ADR-009: Nextcloud manual (containers separados) vs AIO
+
+---
+
 ## [v1.3-management] — 2026-05-18
 
 ### Added

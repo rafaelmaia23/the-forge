@@ -145,7 +145,10 @@ services:
     volumes:
       - /mnt/data/nextcloud/config:/var/www/html/config
       - /mnt/data/nextcloud/apps:/var/www/html/apps
+      - /mnt/data/nextcloud/custom_apps:/var/www/html/custom_apps
       - /mnt/data/nextcloud/userdata:/var/www/html/data
+    extra_hosts:
+      - "cloud.maiahub.com.br:<IP_NPM_NA_REDE_PROXY>"
     networks:
       - proxy
       - nextcloud_internal
@@ -216,14 +219,14 @@ services:
     image: nextcloud:33-apache
     container_name: nextcloud-notify-push
     restart: unless-stopped
-    entrypoint: /var/www/html/apps/notify_push/bin/aarch64/notify_push
+    entrypoint: /var/www/html/custom_apps/notify_push/bin/aarch64/notify_push
     command: /var/www/html/config/config.php
     environment:
       - PORT=7867
       - NEXTCLOUD_URL=http://nextcloud
     volumes:
       - /mnt/data/nextcloud/config:/var/www/html/config:ro
-      - /mnt/data/nextcloud/apps:/var/www/html/apps:ro
+      - /mnt/data/nextcloud/custom_apps:/var/www/html/custom_apps:ro
     depends_on:
       - nextcloud
     networks:
@@ -243,6 +246,17 @@ networks:
   nextcloud_internal:
     internal: true
 ```
+
+**Por que `extra_hosts` com o IP do NPM:**
+
+O `occ notify_push:setup` (Etapa 9.5) faz uma requisição ao próprio domínio público (`cloud.maiahub.com.br`) para testar o push server. O container `nextcloud` não consegue alcançar o IP público por hairpin NAT — a mesma limitação documentada em ADR-008. A solução é apontar o domínio diretamente para o NPM pela rede interna Docker.
+
+Para obter o IP atual do NPM na rede `proxy`:
+```bash
+docker inspect npm --format '{{(index .NetworkSettings.Networks "proxy").IPAddress}}'
+```
+
+Substituir `<IP_NPM_NA_REDE_PROXY>` pelo valor retornado. O IP pode mudar se os containers forem recriados em ordem diferente — verificar novamente se o `notify_push:setup` falhar com "Could not resolve host".
 
 **Por que `OVERWRITEPROTOCOL=https` e `OVERWRITECLIURL`:**
 
@@ -309,7 +323,13 @@ cd /srv/the-forge && git pull
 Todos os volumes da stack usam bind mounts em `/mnt/data/nextcloud/`. O Docker não cria subdiretórios automaticamente — criar antes de subir a stack:
 
 ```bash
-sudo mkdir -p /mnt/data/nextcloud/{config,apps,userdata,db,redis,elasticsearch}
+sudo mkdir -p /mnt/data/nextcloud/{config,apps,custom_apps,userdata,db,redis,elasticsearch}
+
+# Permissões: custom_apps precisa ser acessível pelo www-data (UID 33) dentro do container
+sudo chown -R 33:33 /mnt/data/nextcloud/custom_apps
+
+# Elasticsearch roda como UID 1000 — corrigir antes de subir
+sudo chown -R 1000:1000 /mnt/data/nextcloud/elasticsearch
 
 # Verificar que estão no block volume (não no boot volume)
 df -h /mnt/data/nextcloud/
@@ -324,8 +344,10 @@ df -h /mnt/data/nextcloud/
 cd /srv/the-forge/services/cloud
 
 # Gerar senhas seguras
+# IMPORTANTE: usar -hex 32 para o Redis, não -base64
+# Base64 gera caracteres especiais (&, #) que quebram o .env e o PHP session handler
 POSTGRES_PASSWORD=$(openssl rand -base64 32)
-REDIS_HOST_PASSWORD=$(openssl rand -base64 32)
+REDIS_HOST_PASSWORD=$(openssl rand -hex 32)
 
 cat > .env << EOF
 # PostgreSQL
@@ -375,6 +397,22 @@ Verificar a seção de versões compatíveis do app `Full Text Search - Elastics
 # Local: editar services/cloud/compose.yaml, alterar elasticsearch:8 para elasticsearch:8.11 (ou a versão indicada)
 # git commit -m "fix(cloud): pin elasticsearch to version compatible with nc31 fulltextsearch"
 # git push && na VPS: git pull
+```
+
+---
+
+## Etapa 3.5 — Parâmetros de kernel
+
+O Redis e o Elasticsearch requerem configurações de kernel que precisam ser definidas antes de subir a stack:
+
+```bash
+# Aplicar imediatamente
+sudo sysctl vm.overcommit_memory=1
+sudo sysctl -w vm.max_map_count=262144
+
+# Persistir após reboot
+echo "vm.overcommit_memory=1" | sudo tee -a /etc/sysctl.conf
+echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
 ```
 
 ---
@@ -501,30 +539,36 @@ Repetir o processo para `office.maiahub.com.br`.
 
 ```nginx
 client_max_body_size 0;
-
-proxy_set_header Host $host;
-proxy_set_header X-Real-IP $remote_addr;
-proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-proxy_set_header X-Forwarded-Proto $scheme;
 ```
 
 `client_max_body_size 0` remove qualquer limite de tamanho de upload — necessário para o Nextcloud aceitar arquivos grandes.
 
-#### 6.3.1 — Custom Location: /push (Notify Push)
+> **Não adicionar `proxy_set_header` aqui** — o NPM já os adiciona automaticamente. Headers extras na Advanced config causam falha silenciosa na geração do `.conf`.
 
-Ainda no proxy host do Nextcloud, aba **Custom locations**:
+#### 6.3.1 — Roteamento /push (Notify Push)
 
-Clicar em **Add location** e preencher:
+> **Atenção:** A aba "Custom Locations" do NPM causa falha silenciosa na geração do `.conf` quando combinada com qualquer conteúdo na aba Advanced. O roteamento do `/push` deve ser feito via arquivo de configuração direto no NPM.
 
-| Campo | Valor |
-| --- | --- |
-| location | `/push` |
-| Scheme | `http` |
-| Forward Hostname/IP | `nextcloud-notify-push` |
-| Forward Port | `7867` |
-| WebSocket Support | ✅ |
+Criar o arquivo `server_proxy.conf` dentro do container `npm` (é um include opcional já referenciado pelo template do NPM em todos os server blocks):
 
-Isso faz com que `https://cloud.maiahub.com.br/push` seja roteado para o container `nextcloud-notify-push` com suporte a WebSocket, sem expor o container diretamente.
+```bash
+docker exec npm mkdir -p /data/nginx/custom
+docker exec npm sh -c 'cat > /data/nginx/custom/server_proxy.conf << '"'"'EOF'"'"'
+location /push {
+    resolver 127.0.0.11 valid=30s;
+    set $push_host "http://nextcloud-notify-push:7867";
+    rewrite ^/push/?(.*)$ /$1 break;
+    proxy_pass $push_host;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600s;
+}
+EOF'
+docker exec npm nginx -t && docker exec npm nginx -s reload
+```
+
+O `rewrite` é necessário para remover o prefixo `/push` antes de encaminhar ao binário (que serve rotas na raiz: `/test/cookie`, `/ws`, etc.).
 
 ### 6.4 — Proxy host: office.maiahub.com.br
 
@@ -746,11 +790,17 @@ docker logs nextcloud-notify-push --tail=10
 # Deve aparecer: "Starting notify_push server"
 ```
 
-Configurar a integração:
+Adicionar `nextcloud` (container name) aos trusted_domains — necessário para o binário se conectar ao Nextcloud internamente:
+
+```bash
+docker exec -u www-data nextcloud php occ config:system:set trusted_domains 2 --value=nextcloud
+```
+
+Configurar a integração — passar a URL completa do push server (com `/push`):
 
 ```bash
 docker exec -u www-data nextcloud php occ notify_push:setup \
-  https://cloud.maiahub.com.br
+  https://cloud.maiahub.com.br/push
 ```
 
 Verificar que tudo está OK:

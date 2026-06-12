@@ -296,10 +296,98 @@ Ver [ADR-008](decisions/ADR-008-uptime-kuma-hairpin-nat.md) para análise comple
 
 ---
 
+---
+
+## 2026-06-11/12 — Fase 5: Nextcloud
+
+### O que foi feito
+
+- Stack completa subida com 8 containers: nextcloud, nextcloud-db, nextcloud-redis, nextcloud-collabora, nextcloud-elasticsearch, nextcloud-clamav, nextcloud-notify-push, nextcloud-imaginary
+- Todos os volumes como bind mounts em `/mnt/data/nextcloud/` (block volume de 150 GB)
+- Certificados SSL e proxy hosts criados no NPM para `cloud.maiahub.com.br` e `office.maiahub.com.br`
+- DNS Rewrites no AdGuard para ambos os domínios → `{{OCI_PUBLIC_IP}}`
+- Apps instalados via `occ app:install` (um por vez)
+- notify_push configurado e funcionando (todos os checks do self-test passando)
+- Parâmetros de kernel configurados: `vm.overcommit_memory=1` e `vm.max_map_count=262144`
+- Janela de manutenção configurada para 6h UTC (3h horário de Brasília)
+
+### Desvios do plano original
+
+**1. Redis password deve ser hex puro**
+O guia original usava `openssl rand -base64 32` para gerar a senha do Redis. Base64 inclui caracteres `+`, `/`, `=`, `&`, `#` que causam dois problemas:
+- `#` no `.env` é interpretado como início de comentário — trunca o valor
+- `&` e `#` em `tcp://host:6379?auth=PASSWORD` têm significado especial na URL — quebram o PHP session handler
+Corrigido com `openssl rand -hex 32`. Guia atualizado.
+
+**2. Elasticsearch tag `:9` não existe no Docker Hub**
+O Docker Hub publica apenas tags de versão específicas para Elasticsearch 9 — não o alias de major version (`:9`). O registry oficial (`docker.elastic.co`) também requer versão específica. Corrigido com `elasticsearch:9.4.2`. Guia atualizado.
+
+**3. ClamAV sem imagem ARM64 na variante Alpine**
+`clamav/clamav:latest` é baseada em Alpine e não tem manifest ARM64. Corrigido com `clamav/clamav-debian:latest` (multi-arch). Guia atualizado.
+
+**4. PostgreSQL 18 mudou o caminho do volume de dados**
+PostgreSQL 17 esperava mount em `/var/lib/postgresql/data`. PostgreSQL 18 mudou para `/var/lib/postgresql` (um nível acima). Mount point corrigido no compose.yaml. Guia atualizado.
+
+**5. `custom_apps` precisou de bind mount separado**
+Apps instalados via `occ app:install` vão para `/var/www/html/custom_apps` (o `apps_path` writable do Nextcloud), não para `/var/www/html/apps`. O compose.yaml original não tinha bind mount para esse diretório. Consequência: ao fazer `docker compose up -d --force-recreate` para aplicar nova env var, todos os apps instalados via occ foram perdidos e precisaram ser reinstalados.
+Corrigido: adicionado `custom_apps` como bind mount no compose.yaml; dono deve ser `33:33` (www-data). Guia atualizado.
+
+**6. NPM Custom Locations causa falha silenciosa na geração do .conf**
+Ao adicionar uma Custom Location (via aba "Custom Locations" da UI **ou** via bloco `location {}` no Advanced config), o NPM falha silenciosamente ao gerar o `.conf` do proxy host — o arquivo desaparece. O nginx test falha internamente mas o NPM exibe "salvo com sucesso". Investigação via `docker exec npm ls /data/nginx/proxy_host/`.
+Workaround: usar `/data/nginx/custom/server_proxy.conf` que já é incluído (como include opcional) em todos os server blocks pelo template do NPM. Guia atualizado.
+
+**7. `/push` precisa de rewrite para remover prefixo antes de encaminhar**
+O binário `nextcloud-notify-push` serve rotas na raiz (ex: `/test/cookie`, `/ws`). O nginx estava encaminhando `/push/test/cookie` como `/push/test/cookie` ao binário, que retornava 404. Corrigido com `rewrite ^/push/?(.*)$ /$1 break;` no `server_proxy.conf`.
+
+**8. Hairpin NAT para `notify_push:setup`**
+`occ notify_push:setup` faz requisição HTTP ao próprio domínio público (`cloud.maiahub.com.br`) para testar o push server. O container `nextcloud` não consegue resolver/alcançar o próprio domínio público pela mesma limitação de hairpin NAT documentada em ADR-008.
+Corrigido com `extra_hosts` no compose.yaml apontando `cloud.maiahub.com.br` para o IP interno do NPM na rede `proxy`. O IP do NPM pode mudar — verificar com `docker inspect npm --format '{{(index .NetworkSettings.Networks "proxy").IPAddress}}'`.
+
+**9. `nextcloud` precisou ser adicionado aos trusted_domains**
+O binário `nextcloud-notify-push` conecta ao Nextcloud via `NEXTCLOUD_URL=http://nextcloud`. O hostname `nextcloud` não estava nos `trusted_domains` do Nextcloud, causando rejeição da conexão.
+Corrigido: `occ config:system:set trusted_domains 2 --value=nextcloud`.
+
+### Problemas encontrados e soluções
+
+**`docker compose restart` não recarrega variáveis do `.env`**
+`docker compose restart` apenas para e reinicia o mesmo container — env vars ficam com os valores da criação original. Para aplicar novo valor de env var, é necessário `docker compose up -d --force-recreate <container>`. A distinção é crítica: ao trocar a senha do Redis no `.env`, o restart deixou o container rodando com a senha antiga na env var e no PHP session ini, enquanto o Redis já tinha a senha nova.
+
+**PHP session handler armazena senha do Redis separado do `config.php`**
+`occ config:system:set redis password` atualiza apenas o array `redis` em `config.php`. O PHP session handler usa `session.save_path` configurado em um arquivo `.ini` pelo entrypoint da imagem — armazenado separadamente. Apenas o `force-recreate` (que re-executa o entrypoint com a nova env var) atualiza o session ini.
+
+**Elasticsearch — permissões no diretório de dados**
+Diretório criado com `sudo mkdir` fica com dono `root:root`. O Elasticsearch roda como UID 1000 e falha ao criar o lock file.
+Solução: `sudo chown -R 1000:1000 /mnt/data/nextcloud/elasticsearch`
+
+**Segfaults do Apache durante instalação em massa de apps via UI**
+Instalar múltiplos apps simultaneamente pelo browser causou crash em loop nos workers Apache (SIGSEGV). O container permanecia "Up" mas todos os workers travavam → 502.
+Solução: instalar apps um a um via `occ app:install <app>`. Se ocorrer: `docker compose restart nextcloud` recupera o container.
+
+**`custom_apps` perdido após force-recreate**
+Ao adicionar o bind mount `custom_apps` sem primeiro copiar o conteúdo existente do container, todos os apps instalados foram perdidos. O processo correto:
+1. `docker cp nextcloud:/var/www/html/custom_apps/. /mnt/data/nextcloud/custom_apps/` antes do force-recreate
+2. `sudo chown -R 33:33 /mnt/data/nextcloud/custom_apps/` após criar o diretório
+3. Se perdido: reinstalar todos via `occ app:install`
+
+**`occ notify_push:setup` precisa da URL completa do push server**
+O comando recebe a URL do push server (não a URL base do Nextcloud). Usar `https://cloud.maiahub.com.br` testa `cloud.maiahub.com.br/test/cookie` no próprio Nextcloud (404). O correto é `https://cloud.maiahub.com.br/push`.
+
+### Configurações criadas fora do repositório
+
+| Onde | O que | Por quê |
+| --- | --- | --- |
+| `/data/nginx/custom/server_proxy.conf` (container `npm`) | `location /push` com rewrite + proxy WebSocket para `nextcloud-notify-push:7867` | Bug NPM: custom locations causam falha silenciosa no .conf |
+| `/mnt/data/nextcloud/elasticsearch` | `chown -R 1000:1000` | ES roda como UID 1000, diretório criado como root |
+| `/etc/sysctl.conf` | `vm.overcommit_memory=1` e `vm.max_map_count=262144` | Redis e Elasticsearch requerem esses parâmetros |
+| `~/.homelab/secrets.env` | Senhas do Nextcloud (postgres, redis, admin) | Segredos fora do repo |
+| AdGuard DNS Rewrites | `cloud.maiahub.com.br` e `office.maiahub.com.br` → `{{OCI_PUBLIC_IP}}` | Serviços públicos |
+
+---
+
 - **Fase 2** ✅ — AdGuard Home: DNS privado com bloqueio de trackers
 - **Fase 3** ✅ — Nginx Proxy Manager: proxy reverso com SSL e access lists
 - **Fase 4** ✅ — Portainer + Uptime Kuma + Netdata: gerenciamento e monitoramento
-- **Fase 5** — Nextcloud: migração dos dados da Hostinger
+- **Fase 5** ✅ — Nextcloud: cloud pessoal com stack completa
 - **Fase 6** — Jellyfin + Arr Stack: servidor de mídia
 - **Fase 7** — Dawarich: histórico de localização
 - **Fase 8** — Backup: Restic + Rclone + Backblaze B2

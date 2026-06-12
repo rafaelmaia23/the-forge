@@ -17,7 +17,8 @@ Portainer, Uptime Kuma, Netdata, Dawarich. VPN dupla: Tailscale (rede privada) +
 - ✅ Fase 2 — AdGuard Home (DNS)
 - ✅ Fase 3 — Nginx Proxy Manager (guia em `docs/phases/fase-3-proxy-npm.md`)
 - ✅ Fase 4 — Portainer + Uptime Kuma + Netdata (guia em `docs/phases/fase-4-management.md`)
-- ⏳ Fases 5–9 — pendentes
+- ✅ Fase 5 — Nextcloud (guia em `docs/phases/fase-5-nextcloud.md`, config em `docs/nextcloud-config-reference.md`)
+- ⏳ Fases 6–9 — pendentes
 
 ---
 
@@ -29,6 +30,7 @@ Portainer, Uptime Kuma, Netdata, Dawarich. VPN dupla: Tailscale (rede privada) +
 | `docs/migration-log.md` | Diário do que foi feito, problemas e soluções por fase |
 | `docs/doc-conventions.md` | Como escrever docs: sanitização de IPs, placeholders, formato |
 | `docs/backup-reference.md` | O que precisa de backup por fase/serviço (insumo para Fase 8) |
+| `docs/nextcloud-config-reference.md` | Estado atual da stack Nextcloud — volumes, redes, apps, workarounds |
 | `docs/phases/` | Guias de execução passo a passo por fase |
 | `docs/decisions/` | Architecture Decision Records (ADRs) |
 | `RUNBOOK.md` | Procedimentos operacionais do dia a dia |
