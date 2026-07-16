@@ -41,10 +41,17 @@ free -h                                 # uso de memória
 
 ```bash
 sudo wg show                            # tunnel ativo e último handshake
-ip rule | grep tailscale                # deve mostrar: iif tailscale0 lookup 51820
+ip rule | grep tailscale                # deve mostrar UMA linha: iif tailscale0 lookup 51820
 ip route show table 51820               # deve mostrar: default dev wg-mull-br + 100.64.0.0/10
 ip route | grep default                 # default via 10.0.0.1 dev enp0s6 (intacto)
+systemctl is-active wg-quick@wg-mull-br # deve ser "active" — sobe sozinho no boot (ADR-010)
 ```
+
+> **Atenção:** rodar `wg-quick up`/`wg-quick down` manualmente (fora do
+> `systemctl`) pode deixar rotas ou `ip rule` duplicadas/órfãs (ver seção
+> "Trocar de servidor" abaixo para a limpeza correta). Se `ip rule | grep
+> tailscale` mostrar mais de uma linha, ou `wg-quick up` falhar com `RTNETLINK
+> answers: File exists`, rode a limpeza antes de tentar de novo.
 
 ### Trocar de servidor
 
@@ -227,6 +234,97 @@ sudo iptables -t mangle -F FORWARD
 # Subir novamente
 sudo wg-quick up wg-mull-br
 ```
+
+### AdGuard não sobe após crash / DNS caiu para todo mundo
+
+O container `adguard` tem IP fixo `172.18.0.2` (`ipv4_address` em
+`services/dns/compose.yaml`) — necessário para o monitor de DNS do Uptime
+Kuma (ADR-008) e para qualquer outra referência hardcoded a esse IP. Se o
+`adguard` for removido enquanto outro container está subindo, o Docker pode
+atribuir `172.18.0.2` dinamicamente a esse outro container, e o `adguard`
+não consegue mais subir com esse IP fixo (`docker compose up` falha —
+endereço já em uso). Sintoma: DNS fora do ar para toda a rede Tailscale.
+
+```bash
+# 1. Descobrir quem está com o IP do AdGuard
+docker network inspect proxy --format '{{range .Containers}}{{.Name}}: {{.IPv4Address}}{{"\n"}}{{end}}'
+
+# 2. Derrubar o container que está ocupando 172.18.0.2 (ex: portainer)
+cd /srv/the-forge/services/<serviço-ocupante> && docker compose down
+
+# 3. Subir o AdGuard primeiro, para ele reclamar o IP fixo
+cd /srv/the-forge/services/dns && docker compose up -d
+
+# 4. Confirmar
+docker inspect adguard --format '{{(index .NetworkSettings.Networks "proxy").IPAddress}}'
+# deve imprimir 172.18.0.2
+
+# 5. Subir de volta o container que foi derrubado no passo 2
+cd /srv/the-forge/services/<serviço-ocupante> && docker compose up -d
+```
+
+**Nunca remova a linha `ipv4_address: 172.18.0.2`** do `services/dns/compose.yaml`
+como solução definitiva — isso só destrava o `docker compose up` na hora, mas
+deixa o `dns: [172.18.0.2]` do Uptime Kuma (e qualquer outra referência a esse
+IP) apontando para o container errado na próxima recriação. Ver incidente de
+2026-07-09/16 em `docs/migration-log.md` e ADR-010.
+
+### Painéis internos (`*.maiahub.com.br` tailscale-only) inacessíveis mesmo com Tailscale up
+
+Primeiro, determine o escopo: **acontece em todos os dispositivos Tailscale
+(PC, celular, etc.) ou só em um?** Isso decide por onde procurar.
+
+**Se acontece em todos os dispositivos → comece pela VPS, não pelo cliente.**
+Causa já vista em produção (2026-07-16, ver ADR-006 e `docs/migration-log.md`):
+a regra `ip rule` que faz tráfego Tailscale→Docker não passar pelo Mullvad
+depende de ter prioridade menor que a regra interna do próprio Tailscale
+(`iif tailscale0 lookup 51820`) — e essa prioridade **muda entre versões do
+Tailscale** (era 5209, passou a 5199). Se a nossa regra ficar com prioridade
+maior que a do Tailscale, todo tráfego de clientes Tailscale para os
+containers Docker (não só DNS) passa a ser desviado pelo túnel Mullvad e
+mascarado sob um único IP interno, causando falhas intermitentes.
+
+```bash
+ip rule list | grep -E "172.16.0.0/12|tailscale0"
+# A regra "to 172.16.0.0/12 lookup main" precisa ter prioridade MENOR
+# (evwaliada antes) que "iif tailscale0 lookup 51820". Hoje isso é
+# garantido usando priority 100 (bem abaixo de toda a faixa 5199-5270
+# que o Tailscale usa) em vez de um valor "logo abaixo" de um número
+# específico do Tailscale.
+
+# Se a prioridade estiver errada ou a regra sumiu:
+sudo ip rule del to 172.16.0.0/12 lookup main priority <valor-errado> 2>/dev/null
+sudo ip rule add to 172.16.0.0/12 lookup main priority 100
+sudo systemctl restart tailscale-docker-forward.service   # reaplica e persiste
+```
+
+Confirmar com captura de pacotes que o tráfego vai direto para a bridge
+Docker, sem tocar `wg-mull-br`:
+```bash
+sudo timeout 30 tcpdump -ni any port 53 and host 172.18.0.2 -v
+# Não deve aparecer "wg-mull-br" nas linhas capturadas — só a bridge
+# (br-...) e o veth do container.
+```
+
+**Se acontece só em um dispositivo específico** — aí sim vale investigar o
+lado do cliente antes de mexer na VPS:
+
+```bash
+# No PC/celular afetado (não na VPS):
+dig uptimekuma.maiahub.com.br                    # resolver padrão do SO
+dig @{{OCI_TS_IP}} uptimekuma.maiahub.com.br      # direto no AdGuard da VPS
+# (Windows: nslookup <domínio> / nslookup <domínio> {{OCI_TS_IP}})
+```
+
+- Se a consulta direta ao AdGuard (`@{{OCI_TS_IP}}`) resolver mas a do
+  resolver padrão do SO não → checar "Accept DNS"/"Use Tailscale DNS
+  settings" no app do Tailscale nesse dispositivo.
+- Se ambas resolverem certo mas só o **navegador** falhar → o navegador está
+  usando DNS-over-HTTPS ("Secure DNS"), que ignora o resolver do Tailscale.
+  Esses domínios só existem como DNS Rewrite local no AdGuard — nunca tiveram
+  registro público — então qualquer resolver DoH público retorna NXDOMAIN.
+  Desativar: Firefox → `about:preferences#privacy` → "DNS over HTTPS"; Brave →
+  `brave://settings/security` → "Use secure DNS".
 
 ### Disco cheio
 

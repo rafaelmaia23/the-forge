@@ -177,6 +177,15 @@ filtering:
     - domain: portainer.maiahub.com.br
       answer: 100.120.15.48
       enabled: true
+    - domain: uptimekuma.maiahub.com.br
+      answer: 100.120.15.48
+      enabled: true
+    - domain: netdata.maiahub.com.br
+      answer: 100.120.15.48
+      enabled: true
+    - domain: office.maiahub.com.br
+      answer: 147.15.126.217
+      enabled: true
   safe_fs_patterns:
     - /opt/adguardhome/work/userfilters/*
   safebrowsing_cache_size: 1048576

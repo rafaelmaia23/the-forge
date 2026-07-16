@@ -102,3 +102,53 @@ devem ter precedência sobre as regras automáticas do Docker.
 
 > O `tailscale-docker-forward.service` deve ser criado pelo `provision.sh` para
 > que uma reinstalação do zero já contenha essa configuração.
+
+---
+
+## Atualização — 2026-07-16: prioridade 5200 deixou de ser suficiente
+
+**Contexto:** Em 2026-07-16, todos os painéis internos (`*.maiahub.com.br`
+tailscale-only) ficaram inacessíveis a partir de **todos** os dispositivos
+Tailscale, mesmo com AdGuard, DNAT do Docker, firewall e túnel Mullvad
+auditados e saudáveis individualmente. Uma captura de pacotes (`tcpdump -i any
+port 53`) revelou a causa: pacotes chegando por `tailscale0` e destinados ao
+AdGuard (`172.18.0.2:53`) estavam sendo desviados para fora pela interface
+`wg-mull-br` — com o IP de origem mascarado para `10.69.63.119` (endereço
+interno do túnel Mullvad) — antes de chegar ao container.
+
+**Causa raiz:** a regra interna do próprio Tailscale (`iif tailscale0 lookup
+51820`) não está mais na prioridade **5209** documentada acima — nesta versão
+do `tailscaled` (1.98.8) ela está em `172.16.0.0/12 lookup main`, priority
+**5199**. Como `ip rule` avalia números de prioridade em ordem crescente
+(menor primeiro), a regra do Tailscale (5199) passou a ser avaliada **antes**
+da nossa (5200). Como a tabela 51820 tem uma rota `default dev wg-mull-br`
+(catch-all), qualquer pacote vindo de `tailscale0` — incluindo os já
+DNATados para `172.18.0.2` — encontra essa rota default na regra 5199 e para
+aí; a regra 5200 nunca chega a ser avaliada. Todo tráfego Tailscale→Docker
+passou a ser desviado pelo túnel Mullvad, sofrendo MASQUERADE (todos os
+clientes Tailscale passam a aparecer como uma única origem, `10.69.63.119`,
+para o AdGuard) — o que explica a falha intermitente (não 100% consistente)
+observada.
+
+**Decisão revisada:** a prioridade da nossa regra não pode depender de ficar
+"logo abaixo" de um valor específico que o Tailscale escolhe internamente e
+pode mudar entre versões. Prioridade alterada de `5200` para **`100`** — bem
+abaixo de toda a faixa que o Tailscale usa (5199–5270 observados), tornando a
+regra robusta a mudanças futuras de versão:
+
+```bash
+ip rule del to 172.16.0.0/12 lookup main priority 5200
+ip rule add to 172.16.0.0/12 lookup main priority 100
+```
+
+`/etc/systemd/system/tailscale-docker-forward.service` atualizado para usar
+`priority 100` no `ExecStart`. Validado com captura de pacotes: tráfego
+Tailscale→Docker passou a ir direto pela bridge (`br-3f53f4cdd713` →
+`veth...`), sem tocar `wg-mull-br`, e o cliente real voltou a receber a
+resposta correta do AdGuard de forma consistente.
+
+**Lição para o futuro:** nunca escolher uma prioridade de `ip rule` "relativa"
+a uma regra gerenciada por outro sistema (Tailscale, neste caso) sem
+verificar se essa referência é estável entre versões. Preferir sempre um
+valor bem afastado de toda a faixa observada do outro sistema. Ver incidente
+completo em `docs/migration-log.md` (2026-07-09/16).

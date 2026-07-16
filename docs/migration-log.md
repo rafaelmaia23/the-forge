@@ -384,6 +384,58 @@ O comando recebe a URL do push server (não a URL base do Nextcloud). Usar `http
 
 ---
 
+## 2026-07-09/16 — Incidente: apagão de DNS/rede e corrida de boot Mullvad × Tailscale
+
+### O que aconteceu (2026-07-09, não documentado na hora)
+
+A internet parou de funcionar em todos os aparelhos que usam a VPS como exit node/DNS via Tailscale. Investigação na hora revelou:
+
+1. Um processo de atualização automática (`apt-get`/`unattended-upgrade`) estava travado desde maio, segurando o lock do `dpkg`.
+2. O container `adguard` tinha IP fixo (`172.18.0.2` via `ipv4_address`, ver ADR-008) e não conseguiu subir com `docker compose up` — outro container (`uptime-kuma`) havia ocupado esse IP dinamicamente enquanto o `adguard` estava fora do ar, e o Docker recusou recriar o `adguard` com um IP já em uso.
+3. Correção emergencial: removida a linha `ipv4_address: 172.18.0.2` do `services/dns/compose.yaml` — o `adguard` subiu, DNS voltou.
+4. O processo de `apt-get` preso foi morto manualmente pelo PID; outro ciclo de atualização automática rodou sozinho em seguida; foi feita atualização manual adicional e a VPS foi reiniciada.
+5. Após o reboot, os containers Docker subiram sozinhos normalmente, mas a internet dos aparelhos Tailscale continuou fora do ar — o túnel Mullvad (`wg-mull-br`) não havia subido. Reativado manualmente (`sudo wg-quick up wg-mull-br`), internet voltou.
+
+### O que aconteceu (2026-07-16, hoje)
+
+Painéis `uptimekuma.maiahub.com.br`, `adguard.maiahub.com.br` e `npm.maiahub.com.br` pararam de abrir via Tailscale (Firefox: "endereço não pode ser alcançado"; Brave: "DNS não pode ser consultado"), mesmo com a rede Tailscale up e os containers saudáveis.
+
+### Causa raiz
+
+**1. Colisão de IP `172.18.0.2` (AdGuard ↔ Portainer)**
+A remoção emergencial do `ipv4_address` do AdGuard (passo 3 acima) nunca foi revertida nem documentada. Na recriação seguinte dos containers, o Docker atribuiu IPs dinâmicos em ordem arbitrária: `adguard=172.18.0.5`, `npm=172.18.0.6`, `uptime-kuma=172.18.0.7`, e **`portainer` ficou com `172.18.0.2`** — o IP antigo do AdGuard, o mesmo hardcoded em `dns: [172.18.0.2]` no `services/monitoring/compose.yaml` (ADR-008). Isso quebrou o monitor de DNS interno do Uptime Kuma (apontando para o Portainer, não mais para o AdGuard). **Não foi a causa do apagão de painéis de hoje** — auditoria ao vivo confirmou o AdGuard respondendo corretamente a todos os DNS Rewrites e o DNAT do Docker já apontando para os IPs atuais.
+
+**2. Corrida de boot entre `wg-quick@wg-mull-br.service` e `tailscaled.service`**
+Confirmado via `journalctl -b`: no boot, o `wg-quick@wg-mull-br` tentava rodar antes da interface `tailscale0` existir (`Cannot find device "tailscale0"`), abortava e se autodestruía (`ip link delete dev wg-mull-br`), ficando em estado `failed` sem retry. A unidade só tinha `After=network-online.target nss-lookup.target` — nenhuma dependência de `tailscaled.service`. Essa é a causa raiz real do "Mullvad caiu depois do reboot" do incidente de 09/07, e ia se repetir em todo reboot futuro.
+
+**3. Causa real do apagão de painéis de hoje: prioridade da `ip rule` do ADR-006 ficou obsoleta**
+Auditoria inicial do lado da VPS não encontrou nada quebrado isoladamente (AdGuard saudável, rewrites corretos, DNAT do Docker correto, `DOCKER-USER -i tailscale0 ACCEPT` presente, UFW correto, túnel Mullvad up). A hipótese inicial (DNS-over-HTTPS no navegador) foi descartada quando o usuário confirmou que o problema ocorria em **todos** os dispositivos Tailscale (PC e celular), não só num navegador/máquina.
+
+Captura de pacotes (`tcpdump -i any port 53`) revelou a causa real: pacotes de clientes Tailscale reais, destinados ao AdGuard (`172.18.0.2:53`), estavam saindo pela interface `wg-mull-br` — com IP de origem mascarado para `10.69.63.119` (endereço interno do túnel Mullvad) — em vez de irem direto para a bridge Docker. A regra interna do Tailscale (`iif tailscale0 lookup 51820`) está, nesta versão do `tailscaled` (1.98.8), na prioridade **5199** — não mais 5209 como documentado originalmente no ADR-006. Como isso é *menor* que a prioridade 5200 da nossa regra, a regra do Tailscale passou a ser avaliada primeiro, encontrava a rota `default dev wg-mull-br` (catch-all) na tabela 51820 e parava aí — nossa regra 5200 nunca era alcançada. Todo tráfego Tailscale→Docker (não só DNS) estava sendo desviado pelo túnel Mullvad, com todos os clientes aparecendo para o AdGuard como uma única origem mascarada — o que explica a falha ser intermitente, não 100% consistente. Ver detalhes completos na atualização do ADR-006.
+
+### Correções aplicadas
+
+1. **IP do AdGuard restaurado**: `ipv4_address: 172.18.0.2` de volta em `services/dns/compose.yaml`. Sequência: `docker compose down` no `dns` e no `management`, subiu `adguard` primeiro (reclamou `172.18.0.2`), depois `portainer` (recebeu outro IP dinâmico). Confirmado via `docker inspect adguard --format '{{(index .NetworkSettings.Networks "proxy").IPAddress}}'` → `172.18.0.2`. O `dns: [172.18.0.2]` do Uptime Kuma voltou a funcionar sem precisar recriar o container (o `/etc/resolv.conf` interno já apontava para esse IP, que agora é válido de novo).
+2. **Boot order fix**: drop-in systemd em `/etc/systemd/system/wg-quick@wg-mull-br.service.d/override.conf` adicionando `After=tailscaled.service` + `Requires=tailscaled.service`, e um `ExecStartPre` que espera a interface `tailscale0` existir (timeout 30s) antes do `wg-quick` rodar. **Validado com reboot real** — no boot seguinte o `wg-quick@wg-mull-br` subiu limpo, sem a corrida. Ver ADR-010.
+3. **Gotcha operacional descoberto durante a validação**: rodar `wg-quick up`/`wg-quick down` manualmente (fora do `systemctl`) enquanto o túnel já está ativo pode deixar rotas órfãs na tabela `51820` (a rota `100.64.0.0/10 dev tailscale0` não é removida automaticamente se a interface associada já tiver sido removida por outro caminho), bloqueando o próximo `up` com `RTNETLINK answers: File exists`. O RUNBOOK já tinha o procedimento de limpeza correto na seção "Trocar de servidor" — reforçado como passo obrigatório também para reinícios do mesmo servidor, não só troca.
+4. **Prioridade da `ip rule` do ADR-006 corrigida**: de `5200` para **`100`** (bem abaixo de toda a faixa 5199–5270 usada pelo Tailscale), tanto ao vivo quanto no `ExecStart` persistido de `tailscale-docker-forward.service`. Validado com `tcpdump`: tráfego Tailscale→Docker passou a ir direto pela bridge, sem tocar `wg-mull-br`, e os painéis voltaram a abrir normalmente em todos os dispositivos. Ver atualização do ADR-006.
+
+### Estado final (2026-07-16, pós-correção, tudo validado ao vivo)
+
+| Item | Estado |
+| --- | --- |
+| `adguard` | `172.18.0.2` (fixo), respondendo corretamente a todos os DNS Rewrites |
+| `services/dns/compose.yaml` | Idêntico ao HEAD do git — `ipv4_address: 172.18.0.2` restaurado |
+| `ip rule` | `100: to 172.16.0.0/12 lookup main` (antes 5200) — abaixo de toda a faixa do Tailscale (5199–5270) |
+| `ip route table 51820` | `default dev wg-mull-br` + `100.64.0.0/10 dev tailscale0` — sem duplicatas |
+| `tailscale-docker-forward.service` | `active`, `ExecStart` usa `priority 100` |
+| `wg-quick@wg-mull-br.service` | `active`, drop-in de boot-order aplicado (ADR-010), túnel com handshake recente |
+| `DOCKER-USER` | `ACCEPT` para `tailscale0`, contadores de pacotes crescendo (tráfego real) |
+| Painéis (`adguard`/`npm`/`portainer`/`uptimekuma`/`netdata`) | Confirmado funcionando via Tailscale em múltiplos dispositivos (PC e celular) |
+| `querylog.json` do AdGuard | Parou de ser escrito em disco desde a última recriação do container (~20:25) — log em memória/tempo real continua funcionando (queries respondidas normalmente), mas a persistência em disco ficou travada; não investigado a fundo, não afeta a resolução de DNS em si |
+
+---
+
 - **Fase 2** ✅ — AdGuard Home: DNS privado com bloqueio de trackers
 - **Fase 3** ✅ — Nginx Proxy Manager: proxy reverso com SSL e access lists
 - **Fase 4** ✅ — Portainer + Uptime Kuma + Netdata: gerenciamento e monitoramento

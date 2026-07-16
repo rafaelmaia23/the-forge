@@ -300,7 +300,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 ExecStart=/bin/bash -c 'iptables -C DOCKER-USER -i tailscale0 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -i tailscale0 -j ACCEPT'
-ExecStart=/bin/bash -c 'ip rule add to 172.16.0.0/12 lookup main priority 5200 2>/dev/null || true'
+ExecStart=/bin/bash -c 'ip rule add to 172.16.0.0/12 lookup main priority 100 2>/dev/null || true'
 RemainAfterExit=yes
 
 [Install]
