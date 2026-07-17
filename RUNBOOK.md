@@ -41,17 +41,19 @@ free -h                                 # uso de memória
 
 ```bash
 sudo wg show                            # tunnel ativo e último handshake
-ip rule | grep tailscale                # deve mostrar UMA linha: iif tailscale0 lookup 51820
+ip rule | grep tailscale                # deve mostrar UMA linha: iif tailscale0 lookup 51820 — priority 20000 (fixa, ver wg-mull-br.conf)
 ip route show table 51820               # deve mostrar: default dev wg-mull-br + 100.64.0.0/10
 ip route | grep default                 # default via 10.0.0.1 dev enp0s6 (intacto)
 systemctl is-active wg-quick@wg-mull-br # deve ser "active" — sobe sozinho no boot (ADR-010)
 ```
 
-> **Atenção:** rodar `wg-quick up`/`wg-quick down` manualmente (fora do
-> `systemctl`) pode deixar rotas ou `ip rule` duplicadas/órfãs (ver seção
-> "Trocar de servidor" abaixo para a limpeza correta). Se `ip rule | grep
-> tailscale` mostrar mais de uma linha, ou `wg-quick up` falhar com `RTNETLINK
-> answers: File exists`, rode a limpeza antes de tentar de novo.
+> **Atenção:** desde 2026-07-17, o `PostUp`/`PostDown` de `wg-mull-br.conf` são
+> idempotentes (fazem `del` silencioso antes do `add`) — rodar `wg-quick
+> up`/`wg-quick down` manualmente não deve mais deixar rotas ou `ip rule`
+> órfãs. Se ainda assim `ip rule | grep tailscale` mostrar mais de uma linha,
+> ou `wg-quick up` falhar com `RTNETLINK answers: File exists`, use a limpeza
+> da seção "Trocar de servidor" abaixo antes de tentar de novo — é sinal de
+> que o arquivo `.conf` foi editado manualmente sem a proteção `|| true`.
 
 ### Trocar de servidor
 
@@ -275,27 +277,38 @@ Primeiro, determine o escopo: **acontece em todos os dispositivos Tailscale
 (PC, celular, etc.) ou só em um?** Isso decide por onde procurar.
 
 **Se acontece em todos os dispositivos → comece pela VPS, não pelo cliente.**
-Causa já vista em produção (2026-07-16, ver ADR-006 e `docs/migration-log.md`):
-a regra `ip rule` que faz tráfego Tailscale→Docker não passar pelo Mullvad
-depende de ter prioridade menor que a regra interna do próprio Tailscale
-(`iif tailscale0 lookup 51820`) — e essa prioridade **muda entre versões do
-Tailscale** (era 5209, passou a 5199). Se a nossa regra ficar com prioridade
-maior que a do Tailscale, todo tráfego de clientes Tailscale para os
-containers Docker (não só DNS) passa a ser desviado pelo túnel Mullvad e
-mascarado sob um único IP interno, causando falhas intermitentes.
+Causa já vista em produção duas vezes (2026-07-16 e 2026-07-17, ver ADR-006 e
+`docs/migration-log.md`): a regra `to 172.16.0.0/12 lookup main`
+(`tailscale-docker-forward.service`) precisa ter prioridade **menor** (avaliada
+antes) que a regra `iif tailscale0 lookup 51820` de `wg-mull-br.conf` — essa
+última tem uma rota `default` (catch-all) pro túnel Mullvad na tabela 51820,
+então se ela for avaliada primeiro, todo tráfego Tailscale→Docker (não só DNS)
+é desviado pelo Mullvad e mascarado sob um único IP interno.
+
+**Importante:** essa regra do `wg-mull-br.conf` **não é gerenciada pelo
+Tailscale** — é nossa, criada pelo `PostUp` do próprio túnel Mullvad, e desde
+2026-07-17 tem `priority 20000` fixa no arquivo (antes disso não tinha
+prioridade explícita, então o `iproute2` atribuía um valor arbitrário toda vez
+que o `wg-quick` subia — foi isso que causou o incidente de 07-16, caiu para
+5199, e o de 07-17, caiu para 99, sempre que o `tailscaled` reinicia, ex:
+auto-update, e derruba o `wg-quick@wg-mull-br` junto via `Requires=` do
+ADR-010).
 
 ```bash
 ip rule list | grep -E "172.16.0.0/12|tailscale0"
-# A regra "to 172.16.0.0/12 lookup main" precisa ter prioridade MENOR
-# (evwaliada antes) que "iif tailscale0 lookup 51820". Hoje isso é
-# garantido usando priority 100 (bem abaixo de toda a faixa 5199-5270
-# que o Tailscale usa) em vez de um valor "logo abaixo" de um número
-# específico do Tailscale.
+# "iif tailscale0 lookup 51820"     deve estar em priority 20000 (fixo em wg-mull-br.conf)
+# "to 172.16.0.0/12 lookup main"    deve estar em priority MENOR que a de cima
 
-# Se a prioridade estiver errada ou a regra sumiu:
-sudo ip rule del to 172.16.0.0/12 lookup main priority <valor-errado> 2>/dev/null
-sudo ip rule add to 172.16.0.0/12 lookup main priority 100
-sudo systemctl restart tailscale-docker-forward.service   # reaplica e persiste
+# Se estiver errado, o mais simples é deixar o próprio serviço se autocorrigir:
+sudo systemctl restart tailscale-docker-forward.service
+# O script (/usr/local/sbin/tailscale-docker-forward.sh) descobre a prioridade
+# viva da regra "iif tailscale0" e reinstala a nossa uma abaixo dela — não
+# depende mais de um número fixo "bem abaixo de toda a faixa".
+
+# Se a regra "iif tailscale0" sumiu ou está em outra prioridade que não 20000,
+# o problema é no wg-mull-br.conf ou no túnel — verifique:
+sudo grep "iif tailscale0" /etc/wireguard/wg-mull-br.conf   # deve ter "priority 20000" nas linhas PostUp/PostDown
+systemctl status wg-quick@wg-mull-br.service                 # deve estar "active"
 ```
 
 Confirmar com captura de pacotes que o tráfego vai direto para a bridge

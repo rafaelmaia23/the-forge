@@ -290,17 +290,38 @@ section "10/10 — Tailscale → Docker forwarding"
 
 # Sem esta configuração, pacotes de clientes Tailscale destinados a containers
 # Docker são roteados para a tabela 51820 (Mullvad) após o DNAT, e desaparecem.
-# Ver docs/decisions/ADR-006-tailscale-docker-routing.md
+# A prioridade da nossa regra precisa ficar abaixo da regra "iif tailscale0
+# lookup 51820" criada pelo PostUp do wg-mull-br.conf (fixada em priority
+# 20000 nesse arquivo, fora do repo) — o script abaixo descobre essa
+# prioridade em tempo real em vez de depender de um número fixo, e o
+# PartOf= reaplica automaticamente sempre que o túnel Mullvad reiniciar.
+# Ver docs/decisions/ADR-006-tailscale-docker-routing.md (atualização 2026-07-17)
+cat > /usr/local/sbin/tailscale-docker-forward.sh << 'EOF'
+#!/bin/bash
+set -euo pipefail
+
+iptables -C DOCKER-USER -i tailscale0 -j ACCEPT 2>/dev/null || \
+  iptables -I DOCKER-USER -i tailscale0 -j ACCEPT
+
+while ip rule del to 172.16.0.0/12 lookup main 2>/dev/null; do :; done
+
+ts_prio=$(ip rule list | awk -F: '/iif tailscale0/{print $1; exit}')
+our_prio=$(( ${ts_prio:-101} - 1 ))
+
+ip rule add to 172.16.0.0/12 lookup main priority "${our_prio}"
+EOF
+chmod 755 /usr/local/sbin/tailscale-docker-forward.sh
+
 cat > /etc/systemd/system/tailscale-docker-forward.service << 'EOF'
 [Unit]
 Description=Allow Tailscale traffic to Docker containers
-After=docker.service tailscaled.service
+After=docker.service tailscaled.service wg-quick@wg-mull-br.service
 Requires=docker.service
+PartOf=wg-quick@wg-mull-br.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'iptables -C DOCKER-USER -i tailscale0 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -i tailscale0 -j ACCEPT'
-ExecStart=/bin/bash -c 'ip rule add to 172.16.0.0/12 lookup main priority 100 2>/dev/null || true'
+ExecStart=/usr/local/sbin/tailscale-docker-forward.sh
 RemainAfterExit=yes
 
 [Install]

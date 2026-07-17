@@ -11,12 +11,13 @@ Formato: [Keep a Changelog](https://keepachangelog.com)
 
 - Restaurado `ipv4_address: 172.18.0.2` no container `adguard` (`services/dns/compose.yaml`) — havia sido removido emergencialmente durante um incidente e ficou com o IP ocupado pelo `portainer`, quebrando o `dns: [172.18.0.2]` hardcoded no Uptime Kuma (ADR-008)
 - Drop-in systemd `wg-quick@wg-mull-br.service.d/override.conf` — corrige corrida de boot entre `wg-quick@wg-mull-br` e `tailscaled` que deixava o túnel Mullvad fora do ar após reboot, sem retry automático
-- Prioridade da `ip rule to 172.16.0.0/12 lookup main` (ADR-006) alterada de `5200` para `100` — a prioridade interna da regra do Tailscale (`iif tailscale0 lookup 51820`) mudou de 5209 para 5199 em versões mais novas do `tailscaled`, fazendo com que todo o tráfego Tailscale→Docker (incluindo DNS) fosse desviado pelo túnel Mullvad; painéis internos (AdGuard/NPM/Portainer/Uptime Kuma/Netdata) ficaram inacessíveis via Tailscale em todos os dispositivos até a correção
+- Prioridade da `ip rule to 172.16.0.0/12 lookup main` (ADR-006) alterada de `5200` para `100` — causa originalmente atribuída (errado) a mudança de versão do Tailscale; ver correção abaixo (2026-07-17) para a causa raiz real
+- **Causa raiz real da recorrência (2026-07-17)**: a regra `iif tailscale0 lookup 51820` não é do Tailscale — é criada pelo `PostUp` do nosso próprio `wg-mull-br.conf`, sem `priority` fixa, então o `iproute2` reatribuía um valor arbitrário toda vez que o túnel subia (incluindo quando o `tailscaled` faz auto-update e, via `Requires=` do ADR-010, derruba e sobe o `wg-quick@wg-mull-br` de novo). Corrigido fixando `priority 20000` em `wg-mull-br.conf` (`PostUp`/`PostDown` agora idempotentes, com `del ... || true` antes do `add`) e tornando `tailscale-docker-forward.service` self-healing: novo script `/usr/local/sbin/tailscale-docker-forward.sh` descobre a prioridade viva da regra do Mullvad e instala a nossa uma posição abaixo, disparado automaticamente via `PartOf=wg-quick@wg-mull-br.service` sempre que o túnel reiniciar
 
 ### ADRs
 
-- ADR-010: Ordem de boot — `wg-quick@wg-mull-br` depende de `tailscaled.service`
-- ADR-006: atualizado com o incidente de prioridade de `ip rule` obsoleta e a correção (5200 → 100)
+- ADR-010: Ordem de boot — `wg-quick@wg-mull-br` depende de `tailscaled.service`; nota (2026-07-17) sobre o efeito colateral do `Requires=` que dispara a recorrência do bug do ADR-006
+- ADR-006: atualizado com o incidente de prioridade de `ip rule` obsoleta e a correção (5200 → 100); atualizado de novo (2026-07-17) corrigindo o diagnóstico — causa raiz real é a regra própria sem prioridade fixa, não o Tailscale
 
 ## [v1.4-nextcloud] — 2026-06-12
 

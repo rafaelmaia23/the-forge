@@ -115,3 +115,18 @@ trocar de servidor Mullvad.
 
 > Assim como o `tailscale-docker-forward.service` (ADR-006), este drop-in deve
 > ser recriado pelo `provision.sh` em uma reinstalação do zero.
+
+---
+
+## Nota — 2026-07-17: efeito colateral do `Requires=tailscaled.service`
+
+O `Requires=` adicionado aqui propaga parada/reinício: quando `tailscaled`
+reinicia por qualquer motivo (inclusive auto-update em background, sem
+reboot), `wg-quick@wg-mull-br` reinicia junto. Isso é o comportamento
+desejado para o problema que este ADR resolve, mas teve uma consequência não
+prevista — o `PostUp` de `wg-mull-br.conf` recria a regra `ip rule iif
+tailscale0 table 51820` a cada reinício, e até 2026-07-17 essa regra não
+tinha prioridade fixa, causando a recorrência do bug do ADR-006 sempre que o
+`tailscaled` atualizava sozinho. Corrigido fixando `priority 20000` no
+`wg-mull-br.conf` — ver a atualização de 2026-07-17 no ADR-006 para a causa
+raiz completa.

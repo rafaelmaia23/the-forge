@@ -97,6 +97,8 @@ devem ter precedência sobre as regras automáticas do Docker.
 | Arquivo | Onde |
 | --- | --- |
 | `/etc/systemd/system/tailscale-docker-forward.service` | VM — fora do repositório |
+| `/usr/local/sbin/tailscale-docker-forward.sh` | VM — fora do repositório (script do `ExecStart`, ver atualização 2026-07-17) |
+| `/etc/wireguard/wg-mull-br.conf` (`priority 20000` fixa na regra `iif tailscale0`) | VM — fora do repositório (ver atualização 2026-07-17) |
 | UFW rule: `route allow in on tailscale0` | VM — persistido pelo UFW |
 | UFW rule: `allow from 100.64.0.0/10 to any port 3000` | VM — temporário (remover na Fase 3) |
 
@@ -152,3 +154,88 @@ a uma regra gerenciada por outro sistema (Tailscale, neste caso) sem
 verificar se essa referência é estável entre versões. Preferir sempre um
 valor bem afastado de toda a faixa observada do outro sistema. Ver incidente
 completo em `docs/migration-log.md` (2026-07-09/16).
+
+> **Nota (2026-07-17):** a atribuição a "regra interna do Tailscale" acima
+> estava **errada** — a regra `iif tailscale0 lookup 51820` nunca foi gerenciada
+> pelo Tailscale. Ver a atualização abaixo para a causa raiz real.
+
+---
+
+## Atualização — 2026-07-17: a causa raiz de 07-16 estava mal diagnosticada
+
+**Contexto:** menos de 24h depois da correção acima (prioridade 100), o mesmo
+sintoma voltou — todos os painéis internos inacessíveis via Tailscale, em
+todos os dispositivos. `ip rule list` mostrava a regra `iif tailscale0 lookup
+51820` agora em priority **99** (não 5199 como no dia anterior), de novo
+acima da nossa (100), reabrindo o mesmo desvio pelo `wg-mull-br`.
+
+**Causa raiz real:** a regra `iif tailscale0 lookup 51820` **não é gerenciada
+pelo Tailscale** — a atribuição a "regra interna do Tailscale" na atualização
+de 07-16 estava incorreta. Ela é criada pelo nosso próprio
+`/etc/wireguard/wg-mull-br.conf`, num `PostUp` que existe desde a Fase 1:
+
+```
+PostUp = ip rule add iif tailscale0 table 51820
+```
+
+Sem `priority` explícita. Toda vez que o `wg-quick` sobe o túnel, o
+`iproute2` atribui um valor de prioridade arbitrário para essa regra, com
+base no estado do sistema naquele momento — por isso ela apareceu em 5209
+(maio), 5199 (07-16) e 99 (07-17): não é o Tailscale mudando de versão, é a
+nossa própria regra sendo recriada sem posição fixa toda vez que o
+`wg-mull-br` reinicia.
+
+E por que ela reiniciou hoje sem ninguém mexer manualmente? O `tailscaled`
+fez auto-update em background (1.98.8 → 1.98.9, `journalctl -u tailscaled`
+mostra o restart às 15:31 UTC). O drop-in do ADR-010 declara
+`Requires=tailscaled.service` em `wg-quick@wg-mull-br.service` — e
+`Requires=` propaga parada/reinício: quando `tailscaled.service` reinicia,
+`wg-quick@wg-mull-br.service` reinicia junto, o `PostUp` roda de novo, e a
+regra sem prioridade fixa cai em outro valor arbitrário. Uma correção do
+ADR-010 (pensada para resolver a corrida de boot) acabou criando um gatilho
+de recorrência para o bug do ADR-006.
+
+**Decisão definitiva:**
+
+1. **Fixar a prioridade na origem**, em `/etc/wireguard/wg-mull-br.conf`:
+   ```
+   PostUp   = ip rule del iif tailscale0 lookup 51820 priority 20000 2>/dev/null || true; ip rule add iif tailscale0 table 51820 priority 20000
+   PostDown = ip rule del iif tailscale0 lookup 51820 priority 20000 2>/dev/null || true
+   ```
+   O `del` antes do `add` (com `|| true`, não só `2>/dev/null` — redirecionar
+   stderr não zera o exit code, e o `wg-quick` roda com `set -e`) torna o
+   `PostUp` idempotente: subir o túnel duas vezes seguidas, ou depois de um
+   `PostDown` que falhou pela metade, não trava mais em `RTNETLINK answers:
+   File exists`. O mesmo padrão foi aplicado à rota `100.64.0.0/10 dev
+   tailscale0 table 51820`, que tem o mesmo problema de idempotência.
+
+2. **Self-healing como camada extra**, em
+   `tailscale-docker-forward.service`: o `ExecStart` foi trocado por um
+   script (`/usr/local/sbin/tailscale-docker-forward.sh`) que descobre a
+   prioridade viva da regra `iif tailscale0` (via `ip rule list`, que sempre
+   imprime a palavra-chave como `lookup`, nunca `table`, independente de qual
+   foi usada no `ip rule add`) e instala a nossa regra uma posição abaixo —
+   com fallback para 100 caso a regra do Mullvad não exista. O serviço
+   também ganhou `PartOf=wg-quick@wg-mull-br.service`, que o reinicia
+   automaticamente sempre que o `wg-quick@wg-mull-br` reiniciar (por
+   qualquer motivo, incluindo a cascata do `tailscaled`), reaplicando a
+   prioridade correta sem intervenção manual. Validado ao vivo: um
+   `systemctl restart wg-quick@wg-mull-br.service` (simulando o auto-update
+   de hoje) disparou o restart do `tailscale-docker-forward.service` via
+   `PartOf`, que recalculou e reinstalou a regra corretamente (priority
+   19999, uma abaixo dos 20000 fixos).
+
+**Por que as duas camadas, e não só uma:** fixar a prioridade na origem
+(1) resolve o problema definitivamente enquanto ninguém editar o `.conf` à
+mão; o self-healing (2) é a rede de segurança para quando isso acontecer de
+novo apesar da fixação — por exemplo, se um `.conf` novo for gerado a partir
+do site do Mullvad (rotação de chaves, ver RUNBOOK) e a linha `priority
+20000` for perdida na hora de colar o novo conteúdo.
+
+**Lição para o futuro:** ao investigar um "número que muda sozinho" em uma
+regra do sistema, verificar primeiro **quem realmente cria essa regra** —
+`grep` nos `.conf`/`PostUp` do próprio repositório antes de assumir que é
+outro daemon gerenciando algo internamente. O diagnóstico de 07-16 gastou
+tempo investigando versões do `tailscaled` quando a causa estava numa linha
+sem `priority` no nosso próprio arquivo, criado na Fase 1. Ver incidente
+completo em `docs/migration-log.md` (2026-07-17).

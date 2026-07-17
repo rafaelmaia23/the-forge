@@ -436,6 +436,78 @@ Captura de pacotes (`tcpdump -i any port 53`) revelou a causa real: pacotes de c
 
 ---
 
+## 2026-07-17 — Incidente: recorrência do apagão de painéis — causa raiz real corrigida
+
+### O que aconteceu
+
+Menos de 24h depois da correção documentada acima (2026-07-16, prioridade
+`5200 → 100`), o mesmo sintoma voltou: NPM e os demais painéis internos
+(`*.maiahub.com.br` tailscale-only) pararam de abrir via Tailscale, em todos
+os dispositivos da rede — idêntico ao incidente anterior.
+
+### Causa raiz (a de 07-16 estava mal diagnosticada)
+
+`ip rule list` mostrou a regra `iif tailscale0 lookup 51820` agora em
+**priority 99** (não 5199 como no dia anterior), de novo acima da nossa regra
+(100), reabrindo o desvio do tráfego Tailscale→Docker pelo túnel `wg-mull-br`.
+
+A causa atribuída em 07-16 — "prioridade interna do Tailscale muda entre
+versões" — **estava errada**. Essa regra nunca foi gerenciada pelo Tailscale:
+é criada pelo nosso próprio `PostUp` em `/etc/wireguard/wg-mull-br.conf`
+(existente desde a Fase 1), sem `priority` explícita:
+
+```
+PostUp = ip rule add iif tailscale0 table 51820
+```
+
+Sem prioridade fixa, o `iproute2` atribui um valor arbitrário toda vez que o
+`wg-quick` sobe o túnel — por isso a regra apareceu em 5209 (maio), 5199
+(07-16) e 99 (07-17). O gatilho de hoje: o `tailscaled` fez auto-update em
+background (1.98.8 → 1.98.9, sem reboot da VM) e reiniciou seu serviço. O
+drop-in do ADR-010 (`Requires=tailscaled.service` em
+`wg-quick@wg-mull-br.service`) propaga esse reinício para o `wg-quick`, que
+roda o `PostUp` de novo e recria a regra em outra posição arbitrária — uma
+correção pensada para o problema de boot (ADR-010) virou gatilho de
+recorrência para o bug do ADR-006.
+
+### Correções aplicadas
+
+1. **Prioridade fixada na origem**: `wg-mull-br.conf` agora fixa
+   `priority 20000` na regra `iif tailscale0`, tanto no `PostUp` quanto no
+   `PostDown`.
+2. **PostUp/PostDown tornados idempotentes**: as linhas de `ip rule` e `ip
+   route` agora fazem `del ... 2>/dev/null || true` antes do `add` — o
+   `|| true` é necessário porque `2>/dev/null` sozinho só silencia a
+   mensagem, não zera o exit code, e o `wg-quick` roda com `set -e` (uma
+   falha no `del` abortava o script inteiro antes de chegar no `add`,
+   descoberto durante a validação de hoje).
+3. **Self-healing em `tailscale-docker-forward.service`**: `ExecStart`
+   trocado por `/usr/local/sbin/tailscale-docker-forward.sh`, que descobre a
+   prioridade viva da regra `iif tailscale0` (via `ip rule list`, que sempre
+   imprime `lookup`, nunca `table`) e instala a nossa regra uma posição
+   abaixo, com fallback para 100. Serviço ganhou
+   `PartOf=wg-quick@wg-mull-br.service` — reinicia automaticamente sempre
+   que o túnel Mullvad reiniciar, reaplicando a prioridade correta sem
+   intervenção manual.
+4. Detalhes completos e justificativa em ADR-006 (atualização 2026-07-17) e
+   ADR-010 (nota 2026-07-17).
+
+### Estado final (2026-07-17, pós-correção, validado ao vivo)
+
+| Item | Estado |
+| --- | --- |
+| `ip rule` — `iif tailscale0 lookup 51820` | `priority 20000`, fixa em `wg-mull-br.conf` |
+| `ip rule` — `to 172.16.0.0/12 lookup main` | `priority 19999` (autocalculada, 1 abaixo da de cima) |
+| `/etc/wireguard/wg-mull-br.conf` | `PostUp`/`PostDown` idempotentes, priority fixa |
+| `tailscale-docker-forward.service` | `ExecStart` aponta pro script self-healing; `PartOf=wg-quick@wg-mull-br.service` |
+| `/usr/local/sbin/tailscale-docker-forward.sh` | criado, `chmod 755` |
+| Validação | `systemctl restart wg-quick@wg-mull-br.service` (simulando o auto-update de hoje) disparou o restart automático de `tailscale-docker-forward.service` via `PartOf`, que recalculou e reinstalou a regra corretamente — sem intervenção manual |
+| DNS | `dig` contra `172.18.0.2` resolvendo todos os rewrites corretamente após o teste |
+| `DOCKER-USER` | `ACCEPT` para `tailscale0` presente |
+| Painéis | Confirmado funcionando novamente |
+
+---
+
 - **Fase 2** ✅ — AdGuard Home: DNS privado com bloqueio de trackers
 - **Fase 3** ✅ — Nginx Proxy Manager: proxy reverso com SSL e access lists
 - **Fase 4** ✅ — Portainer + Uptime Kuma + Netdata: gerenciamento e monitoramento
