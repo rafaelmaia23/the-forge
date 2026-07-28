@@ -149,3 +149,25 @@ renovação automática via Let's Encrypt.
 | Monitors via container name | Uptime Kuma UI (configuração fora do repo) |
 | IP do AdGuard no monitor DNS | Uptime Kuma UI — atualizar se container for recriado |
 | Nenhuma alteração em iptables | — |
+
+---
+
+## Atualização — 2026-07-28: o IP fixo agora é garantido, não torcido
+
+O `ipv4_address: 172.18.0.2` deste ADR só funcionava enquanto nenhum outro
+container pegasse o endereço antes. Como o Docker aloca IPs dinâmicos a partir
+do início da subnet, isso falhou duas vezes (2026-07-09 e 2026-07-28), sempre
+após um reboot automático, deixando o AdGuard sem subir.
+
+A rede `proxy` passou a ser criada com `--ip-range 172.18.128.0/17`, reservando
+a faixa baixa para alocação manual — o conflito deixou de ser possível. Ver
+[ADR-011](ADR-011-ipam-reserva-faixa-estatica.md).
+
+O `uptime-kuma` também ganhou IP fixo (`172.18.0.4`), porque os watchdogs rodam
+no host e precisam de um endereço estável para o push do Uptime Kuma — o host
+não resolve nomes de container. Ver [ADR-014](ADR-014-watchdogs-e-failover-de-saida.md).
+
+E o `dns:` do `uptime-kuma` deixou de ser apenas o AdGuard: com um único
+resolvedor, uma queda do AdGuard impedia o próprio Uptime Kuma de resolver o
+endpoint do canal de notificação — ele detectava a falha e não conseguia avisar.
+Ver [ADR-012](ADR-012-fallback-dns-do-monitoramento.md).

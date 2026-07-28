@@ -555,6 +555,120 @@ recorrência para o bug do ADR-006.
 
 ---
 
+## 2026-07-28 — Incidente: três falhas simultâneas e reconstrução da resiliência
+
+### Sintoma relatado
+
+Internet fora no celular e no PC. Sair da rede Tailscale devolvia a internet nos
+dois. Painéis privados inacessíveis. Tentativa de operar o servidor por SSH
+falhou, "como se o servidor estivesse sem acesso à internet".
+
+### As três falhas
+
+**1. Túnel Mullvad sem peer — causa da internet fora nos dispositivos**
+
+`wg show` mostrava a interface no ar, escutando, **sem nenhum peer** e sem
+handshake. O `/etc/wireguard/wg-mull-br.conf` tinha zero blocos `[Peer]`. Como a
+tabela 51820 mantém `default dev wg-mull-br`, todo tráfego de exit node caía num
+buraco negro.
+
+Origem: o backup `wg-mull-br.conf.bak-20260717` (17:32) tem o bloco; o arquivo
+vivo (17:36) não. O `[Peer]` foi comido numa edição durante a sessão de correção
+do ADR-006 em 17/07. Como o `wg-quick` só lê o `.conf` no `up`, a interface
+seguiu **11 dias** rodando com o peer carregado no kernel. O reboot de hoje às
+15:03 (kernel `6.17.0-1018` → `-1019`, `unattended-upgrade`) foi a primeira
+releitura do arquivo quebrado.
+
+**2. AdGuard não subiu após o reboot — causa do DNS morto**
+
+No boot, o `portainer` pegou o `172.18.0.2` e o `pet-oasis-app` pegou o
+`172.18.0.3`. O `adguard`, que exige o `.2`, ficou `Exited (255)`. Repetição
+literal de 2026-07-09. E o `.3` sendo do `pet-oasis` significa que o
+`extra_hosts` do `nextcloud` e do `nextcloud-collabora` apontava
+`cloud.maiahub.com.br` e `office.maiahub.com.br` para o container errado —
+Collabora quebrado silenciosamente.
+
+Antes disso, às 00:45, os logs do AdGuard já mostravam todos os upstreams DoH em
+timeout — o container estava `Up` e saudável para o Docker enquanto nenhuma
+query resolvia.
+
+**3. Dependência circular de DNS — causa do "servidor sem internet"**
+
+O `/etc/resolv.conf` da VPS apontava para `100.100.100.100` (MagicDNS) → AdGuard
+→ container na própria VPS. Com o AdGuard fora, o servidor perdia resolução de
+nomes. Confirmado ao vivo: `curl https://1.1.1.1` respondia `301` na hora,
+`getent hosts doh.mullvad.net` não resolvia nada. O servidor tinha internet; não
+tinha DNS.
+
+### Correções aplicadas
+
+| # | Correção | Onde |
+| --- | --- | --- |
+| 1 | `[Peer]` restaurado por merge do `.bak` no arquivo vivo (preservando as correções de idempotência de 17/07) | `wg-mull-br.conf` |
+| 2 | Rede `proxy` recriada com `--ip-range 172.18.128.0/17`; IPs fixos para `adguard` (.2), `npm` (.3) e `uptime-kuma` (.4) | ADR-011 |
+| 3 | `resolv.conf` estático na VPS + `tailscale set --accept-dns=false` no servidor | ADR-012 |
+| 4 | Fallback `9.9.9.9` no `dns:` do Uptime Kuma — o alerta não saía porque ele não resolvia o endpoint do Telegram | ADR-012 |
+| 5 | Volume nomeado para `/var/www/html` do Nextcloud | ADR-013 |
+| 6 | Watchdogs de DNS, túnel e reconciliação de boot + `Restart=on-failure` no `wg-quick` | ADR-014 |
+| 7 | `ip route replace` e `iptables -C` antes de `-A` no `wg-mull-br.conf` | ADR-014 |
+| 8 | `tailscale set --snat-subnet-routes=false` | ver abaixo |
+
+### Desvios e descobertas durante a execução
+
+**O `compose down` derrubou o Nextcloud (e não era culpa da rede)**
+`/var/www/html` era volume anônimo; o container novo subiu vazio e o entrypoint
+entrou em loop de `maintenance:install`. Dados intactos o tempo todo. Ver
+ADR-013.
+
+**Painéis com 403 depois de religar o `--accept-dns=true`**
+O log do NPM mostrava `[Client 172.18.0.1]` — o gateway da bridge, não o IP
+Tailscale. Causa: `ts-forward` marca com `0x40000` todo pacote que o Tailscale
+forwarda, e `ts-postrouting` mascara por essa marca. O DNAT do Docker é o que
+transforma a conexão em "forwardada", então o IP real do cliente se perdia e a
+Access List (`allow 100.64.0.0/10`) barrava.
+
+Corrigido com `tailscale set --snat-subnet-routes=false`. O Tailscale avisa que
+isso pode quebrar o exit node — **não se aplica aqui**: o `PostUp` do
+`wg-mull-br.conf` já instala `-s 100.64.0.0/10 -o wg-mull-br -j MASQUERADE`, e o
+modo de failover instala o equivalente para a `enp0s6`. O `ts-postrouting` era
+redundante para esse caminho. A rota de volta existe na tabela 52
+(`100.92.109.14 dev tailscale0`, regra prio 5270). Validado: `Client
+100.92.109.14`, HTTP 200.
+
+**O failover impedia o túnel de voltar**
+Encontrado em ensaio, não em produção. A rota de failover ocupa o mesmo
+`default` da tabela 51820 que o `PostUp` do `wg-quick` instalava com `ip route
+add` — o `wg-quick` abortava com `RTNETLINK answers: File exists` e apagava a
+interface recém-criada. A rede de segurança prendia o sistema no estado
+degradado que deveria ser temporário. Ver ADR-014.
+
+**A interface WireGuard sobrevive no kernel sem o `.conf`**
+Descoberto ao errar o roteiro do ensaio: mover o `.conf` antes do `stop` faz o
+`wg-quick down` falhar (`does not exist`), e a interface e o peer continuam
+vivos. É exatamente o mecanismo que manteve o bug do `[Peer]` latente por 11
+dias.
+
+### Validações finais
+
+| Item | Resultado |
+| --- | --- |
+| Túnel Mullvad | handshake ativo, saída `br-sao-wg-201`, `mullvad_exit_ip: true` |
+| Saída direta do host | Oracle, fora do túnel — correto conforme ADR-005 |
+| IPs da rede `proxy` | `adguard` .2, `npm` .3, `uptime-kuma` .4; dinâmicos a partir de `.128.x` |
+| Nextcloud | `installed: true`, `maintenance: false`, HTTP 200; `--force-recreate` sem loop |
+| `notify_push:self-test` | 6/6 |
+| Collabora | `office.maiahub.com.br` HTTP 200, `/etc/hosts` apontando para o NPM real |
+| Painéis via Tailscale | HTTP 200, `Client 100.92.109.14` |
+| Ensaio de failover | degradou no ciclo 2, recuperou sozinho no ciclo 5 |
+| Entrega de alerta | com `adguard` parado, `uptime-kuma` resolveu `api.telegram.org` pelo fallback |
+
+### Pendente
+
+- Reboot real para validar o `homelab-stacks-boot.service` de ponta a ponta
+- Versionar as customizações do `wg-mull-br.conf` (hoje fora do repositório)
+
+---
+
 - **Fase 2** ✅ — AdGuard Home: DNS privado com bloqueio de trackers
 - **Fase 3** ✅ — Nginx Proxy Manager: proxy reverso com SSL e access lists
 - **Fase 4** ✅ — Portainer + Uptime Kuma + Netdata: gerenciamento e monitoramento

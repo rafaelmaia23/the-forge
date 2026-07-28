@@ -7,7 +7,25 @@ Formato: [Keep a Changelog](https://keepachangelog.com)
 
 ## [Unreleased]
 
+### Added
+
+- `infrastructure/watchdog/` — três unidades systemd que verificam **comportamento**, não estado: `homelab-dns-watchdog` (resolve query real contra o AdGuard), `homelab-vpn-watchdog` (handshake + saída real pelo túnel, com failover para o gateway direto) e `homelab-stacks-boot` (reconcilia todas as stacks após o boot). Heartbeat via push monitor do Uptime Kuma — silêncio é o alerta (ADR-014)
+- `--ip-range 172.18.128.0/17` na rede `proxy`, reservando `172.18.0.0/17` para IPs fixos (ADR-011)
+- `ipv4_address` para `npm` (`172.18.0.3`) e `uptime-kuma` (`172.18.0.4`) — o primeiro casa com o `extra_hosts` do Nextcloud/Collabora, o segundo é a push URL dos watchdogs (ADR-011)
+- Volume nomeado `nextcloud_html` para `/var/www/html` (ADR-013)
+- `Restart=on-failure` no drop-in do `wg-quick@wg-mull-br` (ADR-010, atualização)
+- Seção "Primeiro socorro" no RUNBOOK: `tailscale set --accept-dns=false` devolve a internet em qualquer dispositivo sem depender do servidor
+
 ### Fixed
+
+- **Túnel Mullvad sem peer** — o `wg-mull-br.conf` perdeu o bloco `[Peer]` numa edição em 2026-07-17; como o `wg-quick` só lê o arquivo no `up`, a interface rodou 11 dias com o peer no kernel e o reboot de 2026-07-28 releu o arquivo quebrado. Todo tráfego de exit node virou buraco negro, com a unit systemd `active`. Bloco restaurado por merge do backup
+- **AdGuard não subia após reboot** — o Docker alocava IPs dinâmicos a partir do início da subnet, colidindo com o `172.18.0.2` fixo. Aconteceu em 2026-07-09 e 2026-07-28. Resolvido estruturalmente pelo `--ip-range` (ADR-011)
+- **Dependência circular de DNS** — o `/etc/resolv.conf` da VPS apontava para o MagicDNS → AdGuard → container na própria VPS; com o AdGuard fora, o servidor perdia resolução de nomes e parecia offline. `resolv.conf` estático + `--accept-dns=false` na VPS (ADR-012)
+- **Uptime Kuma não conseguia notificar** — tinha `dns: [172.18.0.2]` apenas; sem o AdGuard ele detectava a queda mas não resolvia `api.telegram.org` e a entrega falhava em silêncio. Fallback `9.9.9.9` adicionado (ADR-012)
+- **Nextcloud entrava em loop de instalação após `compose down`** — `/var/www/html` era volume anônimo; o container novo subia vazio e o entrypoint tentava instalar por cima de uma instância existente (ADR-013)
+- **Painéis retornando 403** — `ts-postrouting` mascarava o tráfego forwardado pelo Tailscale (o DNAT do Docker é o que o torna forwardado), então o NPM via `172.18.0.1` em vez do IP `100.x` e a Access List barrava. Corrigido com `tailscale set --snat-subnet-routes=false`; o aviso do Tailscale sobre exit node não se aplica porque o `PostUp` do Mullvad já provê o MASQUERADE
+- **O failover impedia o túnel de voltar** — encontrado em ensaio: a rota de failover ocupa o mesmo `default` da tabela 51820 que o `PostUp` instalava com `ip route add`, e o `wg-quick` abortava com `RTNETLINK answers: File exists`. Corrigido com `ip route replace` no `.conf` e remoção da rota pelo watchdog antes do restart (ADR-014)
+- `PostUp` do `wg-mull-br.conf` passou a usar `iptables -C` antes de `-A` no MASQUERADE e no TCPMSS — as regras duplicavam quando a interface era removida sem `PostDown`
 
 - Restaurado `ipv4_address: 172.18.0.2` no container `adguard` (`services/dns/compose.yaml`) — havia sido removido emergencialmente durante um incidente e ficou com o IP ocupado pelo `portainer`, quebrando o `dns: [172.18.0.2]` hardcoded no Uptime Kuma (ADR-008)
 - Drop-in systemd `wg-quick@wg-mull-br.service.d/override.conf` — corrige corrida de boot entre `wg-quick@wg-mull-br` e `tailscaled` que deixava o túnel Mullvad fora do ar após reboot, sem retry automático
@@ -16,6 +34,11 @@ Formato: [Keep a Changelog](https://keepachangelog.com)
 
 ### ADRs
 
+- ADR-011: Reserva de faixa IPAM para IPs fixos na rede `proxy`
+- ADR-012: O monitoramento não pode depender do que ele monitora
+- ADR-013: Volume nomeado para o código do Nextcloud
+- ADR-014: Watchdogs funcionais e failover de saída
+- ADR-008: atualizado — o IP fixo agora é garantido pelo `ip_range`, e o `uptime-kuma` ganhou IP fixo e fallback de DNS
 - ADR-010: Ordem de boot — `wg-quick@wg-mull-br` depende de `tailscaled.service`; nota (2026-07-17) sobre o efeito colateral do `Requires=` que dispara a recorrência do bug do ADR-006
 - ADR-006: atualizado com o incidente de prioridade de `ip rule` obsoleta e a correção (5200 → 100); atualizado de novo (2026-07-17) corrigindo o diagnóstico — causa raiz real é a regra própria sem prioridade fixa, não o Tailscale
 

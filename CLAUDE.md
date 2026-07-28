@@ -31,6 +31,7 @@ Portainer, Uptime Kuma, Netdata, Dawarich. VPN dupla: Tailscale (rede privada) +
 | `docs/doc-conventions.md` | Como escrever docs: sanitização de IPs, placeholders, formato |
 | `docs/backup-reference.md` | O que precisa de backup por fase/serviço (insumo para Fase 8) |
 | `docs/nextcloud-config-reference.md` | Estado atual da stack Nextcloud — volumes, redes, apps, workarounds |
+| `infrastructure/watchdog/` | Watchdogs de DNS, túnel VPN e reconciliação de boot (ADR-014) |
 | `docs/phases/` | Guias de execução passo a passo por fase |
 | `docs/decisions/` | Architecture Decision Records (ADRs) |
 | `RUNBOOK.md` | Procedimentos operacionais do dia a dia |
@@ -71,6 +72,20 @@ Portainer, Uptime Kuma, Netdata, Dawarich. VPN dupla: Tailscale (rede privada) +
 - Redes sempre explícitas — nunca usar a rede default do Compose
 - `container_name:` sempre definido — necessário para referência cross-stack
 - `restart: unless-stopped` em todos os serviços de produção
+- **IPs fixos só abaixo de `172.18.128.0`** — a rede `proxy` reserva
+  `172.18.0.0/17` para `ipv4_address` e usa `172.18.128.0/17` como pool dinâmico.
+  Um IP fixo dentro do pool reintroduz o conflito do ADR-011
+- **Todo caminho declarado como `VOLUME` na imagem precisa de volume nomeado no
+  compose** — senão vira volume anônimo e um `compose down` descarta o conteúdo
+  (ADR-013)
+
+### Rede e VPN
+
+- **Nunca editar um `.conf` do WireGuard com o túnel no ar.** O `wg-quick` só lê
+  o arquivo no `up`: um erro fica latente até o próximo boot. Sempre
+  `wg-quick down` antes de editar (ADR-014)
+- Supervisão testa **comportamento**, não estado: "container Up" e "unit active"
+  já mascararam três falhas distintas em julho/2026 (ADR-014)
 
 ### Commits
 

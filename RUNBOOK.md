@@ -5,6 +5,28 @@ Atualizado a cada fase conforme novos serviços sobem.
 
 ---
 
+## 🚑 Primeiro socorro — "fiquei sem internet"
+
+Antes de qualquer diagnóstico, recupere o acesso. Em **qualquer dispositivo**:
+
+```bash
+tailscale set --accept-dns=false
+```
+
+Isso desliga só o DNS do tailnet — você volta a resolver pela operadora e a
+internet volta na hora, mantendo o acesso ao servidor por IP (`ssh homelab`).
+Perde bloqueio de anúncios e os domínios internos até religar. Para voltar ao
+normal depois de resolver: `tailscale set --accept-dns=true`.
+
+Se a internet **não** voltar com isso, o problema não é DNS — é o exit node.
+Desligue-o no dispositivo (`tailscale set --exit-node=`) e siga para
+"Túnel Mullvad" abaixo.
+
+> Os watchdogs (ADR-014) tratam sozinhos os dois casos em até ~2 minutos. Este
+> procedimento é para quando você não quer esperar, ou quando eles falharam.
+
+---
+
 ## Acesso à VM
 
 ```bash
@@ -239,41 +261,130 @@ sudo wg-quick up wg-mull-br
 
 ### AdGuard não sobe após crash / DNS caiu para todo mundo
 
-O container `adguard` tem IP fixo `172.18.0.2` (`ipv4_address` em
-`services/dns/compose.yaml`) — necessário para o monitor de DNS do Uptime
-Kuma (ADR-008) e para qualquer outra referência hardcoded a esse IP. Se o
-`adguard` for removido enquanto outro container está subindo, o Docker pode
-atribuir `172.18.0.2` dinamicamente a esse outro container, e o `adguard`
-não consegue mais subir com esse IP fixo (`docker compose up` falha —
-endereço já em uso). Sintoma: DNS fora do ar para toda a rede Tailscale.
+> **Este procedimento ficou obsoleto em 2026-07-28.** A rede `proxy` agora é
+> criada com `--ip-range 172.18.128.0/17`, reservando `172.18.0.0/17` para IPs
+> fixos — o Docker não tem mais como entregar o `172.18.0.2` a outro container
+> (ADR-011). O `homelab-dns-watchdog` também recria a stack `dns` sozinho se o
+> AdGuard parar de responder. Mantido aqui apenas como referência histórica dos
+> incidentes de 2026-07-09 e 2026-07-28.
+
+Diagnóstico atual:
 
 ```bash
-# 1. Descobrir quem está com o IP do AdGuard
-docker network inspect proxy --format '{{range .Containers}}{{.Name}}: {{.IPv4Address}}{{"\n"}}{{end}}'
+# O AdGuard responde de verdade? (container "Up" nao basta — ver ADR-014)
+dig +short @172.18.0.2 cloudflare.com
 
-# 2. Derrubar o container que está ocupando 172.18.0.2 (ex: portainer)
-cd /srv/the-forge/services/<serviço-ocupante> && docker compose down
+# Se nao responder, o watchdog ja deve estar agindo. Para acompanhar:
+journalctl -t homelab-dns-watchdog -f
 
-# 3. Subir o AdGuard primeiro, para ele reclamar o IP fixo
-cd /srv/the-forge/services/dns && docker compose up -d
+# Para forcar agora, sem esperar o timer:
+sudo /usr/local/sbin/homelab-dns-watchdog.sh
 
-# 4. Confirmar
-docker inspect adguard --format '{{(index .NetworkSettings.Networks "proxy").IPAddress}}'
-# deve imprimir 172.18.0.2
-
-# 5. Subir de volta o container que foi derrubado no passo 2
-cd /srv/the-forge/services/<serviço-ocupante> && docker compose up -d
+# Conferir os IPs da rede
+docker network inspect proxy --format '{{range .Containers}}{{.IPv4Address}}  {{.Name}}{{"\n"}}{{end}}' | sort -t. -k3 -k4 -n
 ```
 
-**Nunca remova a linha `ipv4_address: 172.18.0.2`** do `services/dns/compose.yaml`
-como solução definitiva — isso só destrava o `docker compose up` na hora, mas
-deixa o `dns: [172.18.0.2]` do Uptime Kuma (e qualquer outra referência a esse
-IP) apontando para o container errado na próxima recriação. Ver incidente de
-2026-07-09/16 em `docs/migration-log.md` e ADR-010.
+Os IPs fixos são `adguard` `.2`, `npm` `.3` e `uptime-kuma` `.4`. Qualquer
+container fora dessa lista deve aparecer em `172.18.128.x`. Se algum fixo
+aparecer no pool dinâmico, a rede foi recriada sem o `--ip-range` — recrie
+seguindo `infrastructure/provision.sh` (seção 9).
+
+**Nunca remova um `ipv4_address`** dos composes como solução — foi o atalho
+tomado em 2026-07-09 e ele causou diretamente o incidente de 2026-07-28.
+
+---
+
+### Túnel Mullvad caiu / dispositivos sem internet com o exit node ligado
+
+```bash
+# Saude real do tunel — o que o watchdog testa
+sudo wg show wg-mull-br                     # precisa ter um peer E handshake recente
+curl -s --interface wg-mull-br https://am.i.mullvad.net/json   # mullvad_exit_ip: true
+
+# Estamos em modo degradado (saindo sem VPN)?
+ls /run/homelab-vpn-watchdog.degraded 2>/dev/null && echo "DEGRADADO — sem Mullvad"
+ip route show table 51820                   # 'default dev wg-mull-br' = normal
+                                            # 'default via 10.0.0.1 dev enp0s6' = degradado
+
+# Forcar uma rodada agora
+sudo /usr/local/sbin/homelab-vpn-watchdog.sh
+journalctl -t homelab-vpn-watchdog --since -30min
+```
+
+**Se `wg show` não listar nenhum peer**, o `.conf` perdeu o bloco `[Peer]` —
+foi a causa do incidente de 2026-07-28. Restaure a partir de um backup em
+`/etc/wireguard/*.bak-*`, **anexando só o bloco `[Peer]`** ao arquivo vivo (os
+backups antigos não têm as correções de idempotência do `PostUp`):
+
+```bash
+sudo sed -n '/^\[Peer\]/,$p' /etc/wireguard/wg-mull-br.conf.bak-XXXXXXXX \
+    | sudo tee -a /etc/wireguard/wg-mull-br.conf
+sudo systemctl restart wg-quick@wg-mull-br
+```
+
+> ⚠️ **Nunca edite um `.conf` do WireGuard com o túnel no ar.** O `wg-quick` só
+> lê o arquivo no `up`, então um erro fica **latente até o próximo boot** — no
+> incidente de 2026-07-28 foram 11 dias entre a causa e o sintoma. Sempre
+> `sudo wg-quick down wg-mull-br` antes de editar.
+
+---
+
+### Watchdogs — operação
+
+```bash
+systemctl list-timers 'homelab-*'                  # proximos disparos
+systemctl status homelab-dns-watchdog.timer
+systemctl status homelab-vpn-watchdog.timer
+journalctl -t homelab-dns-watchdog -t homelab-vpn-watchdog --since today
+
+# Config (tokens de push do Uptime Kuma — 0600, fora do repo)
+sudo cat /etc/homelab-watchdog.env
+```
+
+Os watchdogs batem heartbeat nos push monitors **apenas quando o serviço
+responde de fato**. Silêncio é alerta: se o watchdog não roda, ou o host caiu,
+ou o timer morreu — os dois merecem aviso. Ver ADR-014.
+
+Ao rotacionar chaves do Mullvad, um `.conf` novo colado do painel **não terá**
+as correções de idempotência (`ip route replace`, `iptables -C` antes de `-A`).
+Reaplique-as, ou o watchdog não conseguirá reerguer o túnel a partir do modo
+degradado.
 
 ### Painéis internos (`*.maiahub.com.br` tailscale-only) inacessíveis mesmo com Tailscale up
 
-Primeiro, determine o escopo: **acontece em todos os dispositivos Tailscale
+**Antes de tudo, distinga o sintoma — eles têm causas completamente diferentes:**
+
+| Sintoma no navegador | Causa provável |
+| --- | --- |
+| Erro de DNS / "não foi possível encontrar o endereço" | `--accept-dns=false` no dispositivo, ou AdGuard fora |
+| **HTTP 403** | Access List do NPM barrando — o IP real do cliente não está chegando |
+| 502 / 504 | container de destino fora do ar |
+| Timeout | roteamento (ver ADR-006) |
+
+**403 — o IP do cliente está sendo mascarado**
+
+```bash
+# Qual IP chegou ao NPM?
+docker exec npm sh -c "tail -n 5 -q /data/logs/proxy-host-*_access.log" | grep -o '\[Client [0-9.]*\]'
+```
+
+Se aparecer `[Client 172.18.0.1]` (o gateway da bridge) em vez do seu IP
+`100.x`, o Tailscale está mascarando o tráfego forwardado: a chain `ts-forward`
+marca com `0x40000` todo pacote vindo de `tailscale0`, e `ts-postrouting`
+mascara por essa marca — e o DNAT do Docker é justamente o que transforma a
+conexão em "forwardada". Correção:
+
+```bash
+sudo tailscale set --snat-subnet-routes=false
+```
+
+O Tailscale emite um aviso sobre exit node; **não se aplica a este setup** — o
+`PostUp` do `wg-mull-br.conf` já mascara o tráfego de saída
+(`-s 100.64.0.0/10 -o wg-mull-br -j MASQUERADE`), e o modo degradado do watchdog
+faz o mesmo para a `enp0s6`. A rota de volta vive na tabela 52 (regra prio
+5270). Visto em 2026-07-28.
+
+**Demais sintomas** — primeiro, determine o escopo: **acontece em todos os dispositivos Tailscale
 (PC, celular, etc.) ou só em um?** Isso decide por onde procurar.
 
 **Se acontece em todos os dispositivos → comece pela VPS, não pelo cliente.**

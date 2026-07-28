@@ -130,3 +130,34 @@ tinha prioridade fixa, causando a recorrência do bug do ADR-006 sempre que o
 `tailscaled` atualizava sozinho. Corrigido fixando `priority 20000` no
 `wg-mull-br.conf` — ver a atualização de 2026-07-17 no ADR-006 para a causa
 raiz completa.
+
+---
+
+## Atualização — 2026-07-28: retry automático e a falha que o `ExecStartPre` não cobre
+
+Este ADR resolveu a corrida de boot, mas a seção "Contexto" já observava que a
+unit fica em `failed` **sem retry automático** quando algo dá errado — e isso
+continuou verdadeiro para qualquer falha que não fosse a ausência da interface
+`tailscale0`.
+
+Foi exatamente o que aconteceu em 2026-07-28: o `wg-mull-br.conf` havia perdido
+o bloco `[Peer]` numa edição em 17/07, o reboot releu o arquivo quebrado, e o
+túnel subiu **sem peer nenhum** — a unit ficou `active`, e todo o tráfego de
+exit node caiu num buraco negro por horas, sem alerta.
+
+Duas adições ao drop-in:
+
+```ini
+Restart=on-failure
+RestartSec=15
+StartLimitBurst=5
+StartLimitIntervalSec=300
+```
+
+E, para o caso que o systemd **não** consegue detectar — unit `active` com túnel
+morto — um watchdog externo que testa handshake e saída real, com failover para
+o gateway direto. Ver [ADR-014](ADR-014-watchdogs-e-failover-de-saida.md).
+
+**Lição:** `Restart=on-failure` cobre o processo que falha ao subir. Não cobre o
+processo que sobe com sucesso configurando a coisa errada — para isso só um
+teste de comportamento serve.
