@@ -23,6 +23,14 @@ services:
       - OVERWRITECLIURL=https://cloud.maiahub.com.br
       - NC_default_phone_region=BR
     volumes:
+      # Volume NOMEADO para o código do Nextcloud. A imagem declara
+      # `VOLUME /var/www/html` no Dockerfile — sem nomear aqui, o Docker cria um
+      # volume ANÔNIMO por container. Um `compose down` descarta a associação e o
+      # container novo sobe com o diretório vazio: o entrypoint decide
+      # "New nextcloud instance" e entra em loop de instalação, porque o
+      # config.php (bind mount) diz que já está instalado e o occ recusa.
+      # Aconteceu em 2026-07-28. Ver ADR-013.
+      - nextcloud_html:/var/www/html
       - /mnt/data/nextcloud/config:/var/www/html/config
       - /mnt/data/nextcloud/apps:/var/www/html/apps
       - /mnt/data/nextcloud/custom_apps:/var/www/html/custom_apps
@@ -122,6 +130,11 @@ services:
     restart: unless-stopped
     networks:
       - nextcloud_internal
+
+volumes:
+  # Código do Nextcloud (/var/www/html). Só o código — config, apps, custom_apps
+  # e userdata são bind mounts em /mnt/data/nextcloud e não passam por aqui.
+  nextcloud_html:
 
 networks:
   proxy:
