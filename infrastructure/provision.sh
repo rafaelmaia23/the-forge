@@ -23,6 +23,7 @@
 #   8. Configura atualizações automáticas de segurança
 #   9. Cria estrutura de diretórios e rede Docker proxy
 #  10. Cria serviço systemd tailscale-docker-forward (ver ADR-006)
+#  11. Instala watchdogs de DNS, túnel VPN e reconciliação de stacks no boot
 # =============================================================================
 
 set -euo pipefail
@@ -106,7 +107,7 @@ info "Sistema           : ${PRETTY_NAME:-desconhecido}"
 echo ""
 
 # ─── 1. Atualizar pacotes de segurança ───────────────────────────────────────
-section "1/9 — Atualizando pacotes de segurança"
+section "1/11 — Atualizando pacotes de segurança"
 apt-get update -qq
 # Apenas pacotes de segurança com upgrade normal — sem dist-upgrade
 # para evitar substituição do kernel ou mudanças de versão major em produção
@@ -114,7 +115,7 @@ apt-get upgrade -y
 log "Pacotes atualizados"
 
 # ─── 2. Dependências base ─────────────────────────────────────────────────────
-section "2/9 — Instalando dependências base"
+section "2/11 — Instalando dependências base"
 apt-get install -y \
     curl \
     wget \
@@ -132,7 +133,7 @@ apt-get install -y \
 log "Dependências instaladas"
 
 # ─── 3. Docker CE ─────────────────────────────────────────────────────────────
-section "3/9 — Instalando Docker CE"
+section "3/11 — Instalando Docker CE"
 
 if command -v docker &>/dev/null; then
     warn "Docker já instalado ($(docker --version)) — pulando instalação"
@@ -188,7 +189,7 @@ systemctl enable docker
 systemctl restart docker
 
 # ─── 4. Firewall ──────────────────────────────────────────────────────────────
-section "4/9 — Configurando firewall (ufw)"
+section "4/11 — Configurando firewall (ufw)"
 ufw default deny incoming
 ufw default allow outgoing
 
@@ -203,7 +204,7 @@ log "Firewall ativo"
 ufw status verbose
 
 # ─── 5. IP Forwarding ─────────────────────────────────────────────────────────
-section "5/9 — Habilitando IP forwarding (Tailscale exit node)"
+section "5/11 — Habilitando IP forwarding (Tailscale exit node)"
 # Sem isso, os pacotes dos dispositivos chegam na VM via Tailscale
 # mas são descartados — a VM não os encaminha para a internet.
 grep -qxF 'net.ipv4.ip_forward=1' /etc/sysctl.conf \
@@ -214,7 +215,7 @@ sysctl -p > /dev/null
 log "IP forwarding ativo (IPv4 + IPv6)"
 
 # ─── 6. Swap ──────────────────────────────────────────────────────────────────
-section "6/9 — Criando swapfile de 2 GB"
+section "6/11 — Criando swapfile de 2 GB"
 if swapon --show | grep -q /swapfile; then
     warn "Swapfile já está ativo — pulando"
 elif [ -f /swapfile ]; then
@@ -231,7 +232,7 @@ else
 fi
 
 # ─── 7. fail2ban ──────────────────────────────────────────────────────────────
-section "7/9 — Configurando fail2ban (proteção SSH)"
+section "7/11 — Configurando fail2ban (proteção SSH)"
 cat > /etc/fail2ban/jail.local << 'EOF'
 [DEFAULT]
 bantime  = 1h
@@ -248,7 +249,7 @@ systemctl restart fail2ban
 log "fail2ban ativo (SSH: 5 tentativas em 10 min → ban de 1h)"
 
 # ─── 8. Atualizações automáticas ──────────────────────────────────────────────
-section "8/9 — Atualizações automáticas de segurança"
+section "8/11 — Atualizações automáticas de segurança"
 cat > /etc/apt/apt.conf.d/20auto-upgrades << 'EOF'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
@@ -262,7 +263,7 @@ EOF
 log "Atualizações automáticas de segurança habilitadas (sem reboot automático)"
 
 # ─── 9. Diretórios e rede Docker ──────────────────────────────────────────────
-section "9/9 — Estrutura de diretórios e rede Docker"
+section "9/11 — Estrutura de diretórios e rede Docker"
 
 # Dados de runtime — separados do repositório
 mkdir -p "$DATA_DIR"/nextcloud/userdata
@@ -303,7 +304,7 @@ else
 fi
 
 # ─── 10. Tailscale → Docker forwarding ───────────────────────────────────────
-section "10/10 — Tailscale → Docker forwarding"
+section "10/11 — Tailscale → Docker forwarding"
 
 # Sem esta configuração, pacotes de clientes Tailscale destinados a containers
 # Docker são roteados para a tabela 51820 (Mullvad) após o DNAT, e desaparecem.
@@ -348,6 +349,35 @@ EOF
 systemctl daemon-reload
 systemctl enable tailscale-docker-forward.service
 log "tailscale-docker-forward.service criado e habilitado"
+
+# ─── 11. Watchdogs e reconciliação de boot ───────────────────────────────────
+section "11/11 — Watchdogs (DNS, túnel VPN, stacks no boot)"
+
+# Três falhas em 2026-07 mostraram que "container rodando" e "serviço systemd
+# active" não significam serviço funcionando: o adguard ficou de pé com todos os
+# upstreams mortos, e o wg-mull-br subiu sem peer nenhum. Os watchdogs testam o
+# comportamento real e agem sozinhos. Ver ADR-014.
+install -m 0755 "$HOMELAB_DIR"/infrastructure/watchdog/homelab-dns-watchdog.sh    /usr/local/sbin/
+install -m 0755 "$HOMELAB_DIR"/infrastructure/watchdog/homelab-vpn-watchdog.sh    /usr/local/sbin/
+install -m 0755 "$HOMELAB_DIR"/infrastructure/watchdog/homelab-stacks-boot.sh     /usr/local/sbin/
+install -m 0644 "$HOMELAB_DIR"/infrastructure/watchdog/systemd/*.service /etc/systemd/system/
+install -m 0644 "$HOMELAB_DIR"/infrastructure/watchdog/systemd/*.timer   /etc/systemd/system/
+
+# O .env real fica fora do repositório — contém as push URLs do Uptime Kuma,
+# que são tokens de acesso.
+if [ ! -f /etc/homelab-watchdog.env ]; then
+    install -m 0600 "$HOMELAB_DIR"/infrastructure/watchdog/homelab-watchdog.env.example \
+        /etc/homelab-watchdog.env
+    warn "/etc/homelab-watchdog.env criado a partir do exemplo — preencha os tokens de push"
+else
+    warn "/etc/homelab-watchdog.env já existe — preservado"
+fi
+
+systemctl daemon-reload
+systemctl enable homelab-stacks-boot.service
+systemctl enable --now homelab-dns-watchdog.timer
+systemctl enable --now homelab-vpn-watchdog.timer
+log "Watchdogs instalados e timers ativos"
 
 # =============================================================================
 echo ""

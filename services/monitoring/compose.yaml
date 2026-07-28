@@ -14,7 +14,11 @@ services:
     volumes:
       - ./data:/app/data
     networks:
-      - proxy
+      proxy:
+        # IP fixo — os watchdogs rodam no HOST e mandam heartbeat para os push
+        # monitors daqui. O host não resolve nomes de container (o DNS do Docker
+        # é interno à rede), então a URL de push precisa de um IP estável.
+        ipv4_address: 172.18.0.4
 
   netdata:
     image: netdata/netdata:stable

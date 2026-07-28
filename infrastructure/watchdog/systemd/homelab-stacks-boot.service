@@ -1,0 +1,13 @@
+[Unit]
+Description=Homelab — reconcilia as stacks Docker após o boot
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/homelab-stacks-boot.sh
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

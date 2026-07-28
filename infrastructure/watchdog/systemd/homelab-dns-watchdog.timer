@@ -1,0 +1,12 @@
+[Unit]
+Description=Homelab — dispara o watchdog de DNS a cada 60s
+
+[Timer]
+# Espera o boot assentar antes do primeiro disparo — senão o watchdog acusa
+# falha enquanto as stacks ainda estão subindo.
+OnBootSec=3min
+OnUnitActiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

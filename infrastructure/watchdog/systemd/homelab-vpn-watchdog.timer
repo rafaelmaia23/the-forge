@@ -1,0 +1,10 @@
+[Unit]
+Description=Homelab — dispara o watchdog do túnel Mullvad a cada 60s
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
