@@ -75,6 +75,8 @@ Estado atual da stack Nextcloud. Não contém histórico de decisões ou problem
 | HTTP/2 | ✅ |
 | Advanced config | `proxy_set_header X-Forwarded-Proto $scheme;` + `proxy_read_timeout 36000s;` |
 
+> Acessar `office.maiahub.com.br` diretamente retorna apenas `ok` — comportamento correto. O Collabora não tem interface própria; funciona somente embutido no Nextcloud.
+
 ### /push — Roteamento notify_push
 
 O roteamento do `/push` é feito via `/data/nginx/custom/server_proxy.conf` dentro do container `npm` (arquivo persistido no volume do NPM, não gerenciado pela UI):
@@ -159,14 +161,21 @@ vm.max_map_count=262144
 
 ## Extra hosts — Hairpin NAT
 
-O container `nextcloud` tem `extra_hosts` no compose.yaml para resolver `cloud.maiahub.com.br` internamente via NPM:
+Os containers `nextcloud` e `nextcloud-collabora` têm `extra_hosts` no compose.yaml para resolver domínios internamente via NPM — sem precisar de hairpin NAT:
 
 ```yaml
+# nextcloud
+extra_hosts:
+  - "cloud.maiahub.com.br:172.18.0.3"
+  - "office.maiahub.com.br:172.18.0.3"
+
+# nextcloud-collabora
 extra_hosts:
   - "cloud.maiahub.com.br:172.18.0.3"
 ```
 
-Necessário para que `occ notify_push:setup` e outras integrações que fazem requisições ao próprio domínio funcionem sem hairpin NAT.
+- `nextcloud` precisa de `cloud.maiahub.com.br` para `notify_push:setup` e `office.maiahub.com.br` para validar o Collabora
+- `nextcloud-collabora` precisa de `cloud.maiahub.com.br` para fazer as requisições WOPI de volta ao Nextcloud
 
 **O IP do NPM pode mudar** após recriação de containers. Para verificar o IP atual:
 ```bash
@@ -240,12 +249,51 @@ docker exec -u www-data nextcloud php occ notify_push:self-test
 
 ---
 
+## Background jobs — Cron
+
+O modo de background jobs foi trocado de Ajax para Cron. Cron job adicionado no host (`crontab -e` do usuário `ubuntu`):
+
+```
+*/5 * * * * docker exec -u www-data nextcloud php -f /var/www/html/cron.php
+```
+
+Modo configurado em: **Configurações → Administration → Basic settings → Background jobs → Cron**
+
+---
+
+## CalDAV — Rate limit de criação de calendários
+
+O app `dav` tem rate limit para criação de novos calendários/listas de tarefas:
+
+- **Limite:** 10 criações por hora (padrão)
+- **Config:** `occ config:app:set dav rateLimitCalendarCreation --value=N` (limite) e `rateLimitPeriodCalendarCreation` (período em segundos)
+- **Backend:** `OC\Security\RateLimiting\Backend\MemoryCacheBackend` usando Redis como distributed cache
+- **Chaves Redis:** padrão `*RateLimiting*` com array JSON de timestamps de expiração
+
+**Para migração de muitos calendários**, aumentar o limite temporariamente:
+```bash
+docker exec -u www-data nextcloud php occ config:app:set dav rateLimitCalendarCreation --value=100
+# importar tudo
+docker exec -u www-data nextcloud php occ config:app:delete dav rateLimitCalendarCreation
+```
+
+**Arquivo crítico** (não modificar): `apps/dav/lib/CalDAV/Security/RateLimitingPlugin.php` — está no bind mount `/mnt/data/nextcloud/apps/`. Qualquer edição persiste no host.
+
+---
+
 ## Integrações (Etapa 9)
 
 | Integração | Status | Configuração |
 | --- | --- | --- |
 | Notify Push | ✅ | `occ notify_push:setup https://cloud.maiahub.com.br/push` |
-| Collabora | ⏳ | Admin → Office → `https://office.maiahub.com.br` |
-| Elasticsearch FTS | ⏳ | Admin → Full text search → `http://nextcloud-elasticsearch:9200` |
-| ClamAV | ⏳ | Admin → Security → Antivirus → `nextcloud-clamav:3310` |
-| Imaginary | ⏳ | `occ config:system:set preview_imaginary_url --value="http://nextcloud-imaginary:9000"` |
+| Collabora | ✅ | Admin → Office → `https://office.maiahub.com.br` |
+| Elasticsearch FTS | ✅ | Admin → Full text search → `http://nextcloud-elasticsearch:9200` |
+| ClamAV | ✅ | `av_mode=daemon`, `av_host=nextcloud-clamav`, `av_port=3310` (via occ config:app:set) |
+| Imaginary | ✅ | `occ config:system:set enabledPreviewProviders 0 --value="OC\\Preview\\Imaginary"` + `preview_imaginary_url` |
+
+**wopi_allowlist** (necessário para Collabora funcionar):
+```bash
+occ config:app:set richdocuments wopi_allowlist --value="172.16.0.0/12"
+```
+
+**Portainer:** registrar a stack `cloud` apenas como "external" (sem deixar o Portainer gerenciar o deploy). Se o Portainer reimplantar a stack, ele não lê o `.env` local e os containers sobem sem variáveis de ambiente.

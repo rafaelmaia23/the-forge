@@ -5,6 +5,53 @@ Atualizado durante a execução de cada fase.
 
 ---
 
+## 2026-06-12 — Fase 5 (continuação): Configurações pós-stack e integrações
+
+### O que foi feito
+
+- **Background jobs:** modo trocado de Ajax para Cron. Cron job adicionado no host: `*/5 * * * * docker exec -u www-data nextcloud php -f /var/www/html/cron.php`
+- **maintenance_window_start:** configurado via `occ config:system:set maintenance_window_start --value=6 --type=integer` (3h horário de Brasília)
+- **Mimetype migrations:** executado `occ maintenance:repair --include-expensive`
+- **ClamAV (Etapa 9.3):** configurado no modo daemon via occ (`av_mode=daemon`, `av_host=nextcloud-clamav`, `av_port=3310`)
+- **Collabora (Etapa 9.1):** configurado via admin UI. Dois problemas encontrados e resolvidos (ver Desvios)
+- **Elasticsearch FTS (Etapa 9.2):** configurado via admin UI + índice construído com `occ fulltextsearch:index`
+- **Imaginary (Etapa 9.4/9.5):** configurado via occ (`enabledPreviewProviders` + `preview_imaginary_url`)
+- **Importação de dados:** contatos importados. Calendários parcialmente importados (bloqueio por rate limit — ver Desvios)
+
+### Desvios e problemas
+
+**Collabora — hairpin NAT duplo**
+O container `nextcloud` não conseguia resolver `office.maiahub.com.br` para validar o servidor Collabora (hairpin NAT). Solução: adicionar `office.maiahub.com.br:172.18.0.3` ao `extra_hosts` do serviço `nextcloud`. O container `nextcloud-collabora` também não conseguia alcançar `cloud.maiahub.com.br` para fazer requisições WOPI. Solução: adicionar `cloud.maiahub.com.br:172.18.0.3` ao `extra_hosts` do `nextcloud-collabora`.
+
+**wopi_allowlist**
+Sem o `wopi_allowlist` configurado, Collabora recebia "Unauthorized WOPI host" ao abrir documentos. Solução: `occ config:app:set richdocuments wopi_allowlist --value="172.16.0.0/12"`.
+
+**Portainer quebrou o Redis**
+Ao registrar a stack `cloud` no Portainer, ele reimplantou a stack sem ler o `.env` local, fazendo `REDIS_HOST_PASSWORD` ficar vazio. Redis entrou em crash loop com "wrong number of arguments for requirepass". Solução: `docker compose up -d --force-recreate nextcloud-redis` a partir do diretório com o `.env`. Portainer deve ser usado apenas no modo "external stack" (visibilidade sem controle de deploy).
+
+**CalDAV rate limit na importação de calendários**
+Ao importar múltiplos calendários/.ics, o app `dav` bloqueou com "Too many calendars created" após 10 criações. O rate limit é configurado via app config do app `dav` (não system config):
+- Chave: `rateLimitCalendarCreation` (limite, padrão: 10)
+- Período: `rateLimitPeriodCalendarCreation` (segundos, padrão: 3600)
+- Backend: `MemoryCacheBackend` usando Redis como distributed cache
+- Contadores ficam em chaves Redis com padrão `*RateLimiting*`
+
+Tentativas de aumentar o limite via system config foram ineficazes (chave errada). A chave correta é app config do `dav`. Para migração futura: `occ config:app:set dav rateLimitCalendarCreation --value=100` antes de importar.
+
+**NUNCA modificar `RateLimitingPlugin.php` diretamente**
+Tentativas de patch do arquivo PHP (via sed e via str_replace) causaram parse errors que quebraram o DAV inteiro. O arquivo fica no bind mount `/mnt/data/nextcloud/apps/` e qualquer modificação persiste. Para restaurar: `docker exec nextcloud cp /var/www/html/apps/dav/lib/CalDAV/Security/RateLimitingPlugin.php.bak /var/www/html/apps/dav/lib/CalDAV/Security/RateLimitingPlugin.php` + `docker compose up -d --force-recreate nextcloud`.
+
+### Pendente
+
+- Importar 3 arquivos .ics restantes (2 task lists + 1 calendário) após expirar rate limit
+- Migrar 7 GB de arquivos do PC local para a VM via rsync
+- Configurar DAVx⁵ no Android + app Nextcloud mobile
+- Adicionar monitores no Uptime Kuma (Nextcloud + Collabora)
+- Registrar stack `cloud` no Portainer como external stack
+- Commit e tag `v1.4-nextcloud`
+
+---
+
 ## 2026-05-04 — Fase 1: Fundação Oracle Cloud
 
 ### O que foi feito
