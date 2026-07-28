@@ -97,10 +97,26 @@ fails=$((fails + 1))
 echo "${fails}" > "${STATE_FILE}"
 log "tunel ${WG_IF} sem saude (falha ${fails}/${FAIL_THRESHOLD})"
 
-if [ "${fails}" -lt "${FAIL_THRESHOLD}" ]; then
+# Tenta reerguer o túnel SEMPRE — inclusive já em modo degradado, senão o
+# failover viraria um estado permanente esperando intervenção manual. Enquanto
+# degradado, espaça as tentativas para não reiniciar a unidade a cada minuto.
+if [ ! -f "${DEGRADED_FLAG}" ] || [ $(( fails % ${WG_RETRY_EVERY:-5} )) -eq 0 ]; then
     log "tentando reiniciar ${WG_UNIT}"
+
+    # A rota de failover ocupa o mesmo `default` da tabela 51820 que o PostUp do
+    # wg-quick instala. Se ela ficar no lugar, o wg-quick aborta com "RTNETLINK
+    # answers: File exists" e apaga a interface que acabou de criar — ou seja, o
+    # próprio failover impediria o túnel de voltar. O .conf já usa `ip route
+    # replace`, mas tirar a rota antes protege também o caso de um .conf novo
+    # colado do painel do Mullvad, que vem sem as nossas customizações.
+    if [ -f "${DEGRADED_FLAG}" ]; then
+        ip route del default table "${TABLE}" 2>/dev/null || true
+    fi
+
+    systemctl reset-failed "${WG_UNIT}" 2>/dev/null || true
     systemctl restart "${WG_UNIT}" 2>&1 | logger -t homelab-vpn-watchdog
     sleep 12
+
     if tunnel_healthy; then
         log "tunel recuperado pelo restart"
         [ -f "${DEGRADED_FLAG}" ] && leave_failover
@@ -108,9 +124,18 @@ if [ "${fails}" -lt "${FAIL_THRESHOLD}" ]; then
         push up recuperado-por-restart
         exit 0
     fi
-    exit 1
+
+    # Restart falhou e nós tínhamos acabado de remover a rota de failover —
+    # reinstala, senão os dispositivos ficariam sem saída nenhuma até o próximo
+    # ciclo do timer.
+    if [ -f "${DEGRADED_FLAG}" ]; then
+        log "restart falhou — reinstalando a rota de failover"
+        enter_failover
+    fi
 fi
 
 # Restart não resolveu — degrada para saída direta em vez de deixar no vácuo.
-[ -f "${DEGRADED_FLAG}" ] || enter_failover
+if [ "${fails}" -ge "${FAIL_THRESHOLD}" ] && [ ! -f "${DEGRADED_FLAG}" ]; then
+    enter_failover
+fi
 exit 1
