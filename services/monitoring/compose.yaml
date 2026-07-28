@@ -4,7 +4,13 @@ services:
     container_name: uptime-kuma
     restart: unless-stopped
     dns:
+      # AdGuard primeiro (resolve os domínios internos do homelab), com fallback
+      # público. O fallback existe para o caminho de NOTIFICAÇÃO: com apenas o
+      # AdGuard, uma queda do próprio AdGuard impedia o Uptime Kuma de resolver o
+      # endpoint do canal de alerta — ele detectava a falha e não conseguia
+      # avisar, justamente quando mais importava. Ver ADR-012.
       - 172.18.0.2
+      - 9.9.9.9
     volumes:
       - ./data:/app/data
     networks:

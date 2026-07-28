@@ -278,11 +278,28 @@ chown -R "$DEPLOY_USER:$DEPLOY_USER" "$HOMELAB_DIR"
 log "Ownership de $HOMELAB_DIR → $DEPLOY_USER"
 
 # Rede compartilhada por todos os serviços acessados pelo Nginx Proxy Manager
+#
+# O --ip-range separa a faixa dinâmica da faixa de IPs fixos. Sem ele, o Docker
+# aloca IPs dinâmicos a partir do início da subnet (.2, .3, ...) — exatamente os
+# endereços reservados via ipv4_address no compose. Se um container dinâmico
+# subir antes do adguard (172.18.0.2) ou do npm (172.18.0.3) após um reboot, ele
+# ocupa o endereço e o container com IP fixo não sobe mais. Aconteceu duas vezes
+# (2026-07-09 e 2026-07-28, ver migration-log).
+#
+#   172.18.0.2  – 172.18.127.254  → reservado para ipv4_address (fixos)
+#   172.18.128.0 – 172.18.255.254 → pool dinâmico do Docker
+#
+# Ver docs/decisions/ADR-011-ipam-reserva-faixa-estatica.md
 if docker network inspect proxy &>/dev/null; then
     warn "Rede Docker 'proxy' já existe — ok"
 else
-    docker network create proxy
-    log "Rede Docker 'proxy' criada"
+    docker network create \
+        --driver bridge \
+        --subnet 172.18.0.0/16 \
+        --gateway 172.18.0.1 \
+        --ip-range 172.18.128.0/17 \
+        proxy
+    log "Rede Docker 'proxy' criada (faixa dinâmica 172.18.128.0/17)"
 fi
 
 # ─── 10. Tailscale → Docker forwarding ───────────────────────────────────────

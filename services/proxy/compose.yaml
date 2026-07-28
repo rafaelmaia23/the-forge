@@ -10,7 +10,13 @@ services:
       - ./data:/data
       - ./letsencrypt:/etc/letsencrypt
     networks:
-      - proxy
+      proxy:
+        # IP fixo — o extra_hosts do nextcloud e do nextcloud-collabora aponta
+        # cloud/office.maiahub.com.br para este endereço (hairpin NAT). Sem o
+        # ipv4_address, o NPM recebia IP dinâmico e o extra_hosts só funcionava
+        # por coincidência: em 2026-07-28 o .3 foi parar em outro container e
+        # o Collabora quebrou silenciosamente. Ver ADR-011.
+        ipv4_address: 172.18.0.3
 
 networks:
   proxy:

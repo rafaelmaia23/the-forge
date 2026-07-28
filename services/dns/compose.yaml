@@ -11,6 +11,10 @@ services:
       - ./data:/opt/adguardhome/work
     networks:
       proxy:
+        # IP fixo — o Uptime Kuma tem este endereço hardcoded no monitor de DNS
+        # e no seu próprio `dns:` (ADR-008). A rede proxy reserva 172.18.0.0/17
+        # para IPs fixos, fora do pool dinâmico do Docker, para que este endereço
+        # nunca seja ocupado por outro container após um reboot (ADR-011).
         ipv4_address: 172.18.0.2
 
 networks:
