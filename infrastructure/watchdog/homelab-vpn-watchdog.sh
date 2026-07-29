@@ -57,6 +57,47 @@ tunnel_healthy() {
 direct_gateway() { ip route show default | awk '/^default/ {print $3; exit}'; }
 direct_iface()   { ip route show default | awk '/^default/ {print $5; exit}'; }
 
+# Saúde do CAMINHO de saída — pergunta direta ao kernel: um pacote vindo de um
+# cliente Tailscale, destinado à internet, sai por onde? A origem é sintética
+# (não precisa de nenhum peer conectado) e o custo é uma syscall.
+#
+# Existe porque em 2026-07-29 as duas `ip rule` sumiram do sistema com o túnel
+# perfeitamente saudável: handshake fresco, `mullvad_exit_ip: true`, unit
+# `active`. O tráfego dos dispositivos passou a sair pela interface física com
+# origem CGNAT (100.64.0.0/10) e sem MASQUERADE — descartado no primeiro
+# roteador, sem nenhum sinal do lado do servidor. Testar o túnel não pega isso;
+# só testar o caminho pega.
+exit_path_healthy() {
+    [ -f "${DEGRADED_FLAG}" ] && return 0   # em failover, sair pela física é o esperado
+    local dev
+    dev=$(ip route get 1.1.1.1 from 100.64.0.1 iif tailscale0 2>/dev/null \
+          | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    [ "${dev}" = "${WG_IF}" ]
+}
+
+# Reinstala as ip rules sem tocar no túnel — a regra `iif tailscale0` nasce do
+# PostUp do wg-mull-br.conf e a `to 172.16.0.0/12` do tailscale-docker-forward,
+# mas ambas podem ser removidas por terceiros com o túnel no ar.
+repair_exit_path() {
+    log "CAMINHO DE SAIDA QUEBRADO — reinstalando ip rules"
+    # contexto para descobrir o culpado: o que o tailscaled fez nos ultimos minutos
+    journalctl -u tailscaled --since -10min --no-pager 2>/dev/null | tail -5 \
+        | while read -r l; do log "  [tailscaled] ${l}"; done
+
+    ip rule del iif tailscale0 lookup "${TABLE}" priority 20000 2>/dev/null || true
+    ip rule add iif tailscale0 table "${TABLE}" priority 20000
+    # recalcula e reinstala a regra das redes Docker uma posicao abaixo
+    systemctl restart tailscale-docker-forward.service 2>&1 | logger -t homelab-vpn-watchdog
+
+    if exit_path_healthy; then
+        log "caminho de saida restaurado"
+        push up caminho-restaurado
+        return 0
+    fi
+    log "ERRO: caminho de saida continua quebrado apos reinstalar as ip rules"
+    return 1
+}
+
 enter_failover() {
     local gw dev
     gw=$(direct_gateway); dev=$(direct_iface)
@@ -89,6 +130,14 @@ if tunnel_healthy; then
     [ -f "${DEGRADED_FLAG}" ] && leave_failover
     [ "${fails}" -gt 0 ] && log "tunel voltou apos ${fails} falha(s)"
     echo 0 > "${STATE_FILE}"
+
+    # Túnel são não basta: as ip rules podem ter sumido, e aí o tráfego dos
+    # dispositivos sai pela interface física com origem CGNAT e morre calado.
+    if ! exit_path_healthy; then
+        repair_exit_path || { push down caminho-de-saida-quebrado; exit 1; }
+        exit 0
+    fi
+
     push up OK
     exit 0
 fi

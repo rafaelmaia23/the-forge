@@ -239,3 +239,67 @@ outro daemon gerenciando algo internamente. O diagnóstico de 07-16 gastou
 tempo investigando versões do `tailscaled` quando a causa estava numa linha
 sem `priority` no nosso próprio arquivo, criado na Fase 1. Ver incidente
 completo em `docs/migration-log.md` (2026-07-17).
+
+---
+
+## Atualização — 2026-07-29: a causa raiz recorrente nunca foi a prioridade
+
+**Contexto:** quarta recorrência. Sintoma novo: o exit node parou de funcionar
+para os dispositivos (celular sem internet com o Tailscale ligado), enquanto os
+painéis continuavam acessíveis e o servidor parecia perfeitamente saudável —
+túnel com handshake fresco, `mullvad_exit_ip: true`, unit `active`, DNS
+respondendo em 2ms.
+
+**Causa raiz, com prova no journal do `tailscaled` (`Jul 29 06:28:31`):**
+
+```
+monitor: RTM_DELROUTE: dst=10.0.0.0/24   table=254   <- enp0s6 perdendo o endereço
+monitor: RTM_DELROUTE: dst=10.0.0.166/32 table=255
+monitor: ip rule deleted: Priority:5210    (do Tailscale)
+monitor: ip rule deleted: Priority:20000   <- nossa (iif tailscale0)
+monitor: ip rule deleted: Priority:5230    (do Tailscale)
+monitor: ip rule deleted: Priority:19999   <- nossa (to 172.16.0.0/12)
+monitor: ip rule deleted: Priority:5270    (do Tailscale)
+monitor: ip rule deleted: Priority:5250    (do Tailscale)
+```
+
+Uma renovação de lease DHCP na `enp0s6` removeu o endereço da interface e
+disparou um **flush completo das `ip rule` do sistema**. O `tailscaled`
+reconstruiu as suas; as nossas duas ficaram para trás.
+
+Sem a regra `iif tailscale0`, o tráfego dos dispositivos caiu na tabela `main` e
+saiu pela interface física com origem `100.64.0.0/10` — CGNAT, não roteável — e
+sem MASQUERADE, porque a única regra existente casa com `-o wg-mull-br`. Os
+pacotes eram descartados no primeiro roteador: SYN sem resposta, timeout
+infinito, e **nenhum sinal do lado do servidor**.
+
+Os painéis continuaram funcionando porque a *outra* regra sumiu junto: sem
+`to 172.16.0.0/12 lookup main`, o tráfego para os containers cai na tabela
+`main`, que já tem as rotas das bridges. Duas ausências que se cancelavam para
+um caminho e se somavam contra o outro — o que mascarou o problema.
+
+**Por que as três correções anteriores não resolveram:** todas trataram a
+*prioridade* da regra (5200 → 100 → 20000 fixa → autocalculada). A prioridade
+era um problema real e está resolvida. Mas o modo de falha recorrente é outro:
+**a regra simplesmente deixa de existir**, varrida por um evento de rede que não
+tem nada a ver com o Mullvad nem com o Tailscale. Nenhuma escolha de prioridade
+protege contra isso.
+
+**Decisão:** parar de tentar tornar a regra imune e passar a **vigiar o
+resultado**. O `homelab-vpn-watchdog` (ADR-014) ganhou um teste do caminho de
+saída que pergunta direto ao kernel:
+
+```bash
+ip route get 1.1.1.1 from 100.64.0.1 iif tailscale0
+# deve responder "dev wg-mull-br table 51820"
+```
+
+Origem sintética, não precisa de peer conectado, custa uma syscall. Se a
+resposta não for a interface do túnel, o watchdog reinstala as duas regras e
+notifica. Janela máxima de exposição: 60 segundos.
+
+**Lição:** três ADRs seguidos trataram o sintoma que estava visível (a
+prioridade errada) porque a regra sempre *existia* quando fomos olhar. O modo de
+falha real — a regra não existir — só apareceu quando um teste verificou o
+**resultado** (o pacote sai por onde?) em vez do **estado** (a regra está com a
+prioridade certa?). É a mesma lição do ADR-014, por outro caminho.

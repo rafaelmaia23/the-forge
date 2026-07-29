@@ -130,3 +130,34 @@ rota alguma no intervalo).
 | `infrastructure/provision.sh` (seção 11) | instalação e habilitação |
 | `/etc/homelab-watchdog.env` | VM — fora do repositório (tokens) |
 | `/etc/systemd/system/wg-quick@wg-mull-br.service.d/override.conf` | VM — `Restart=on-failure` |
+
+---
+
+## Atualização — 2026-07-29: teste do caminho de saída
+
+O watchdog do túnel verificava a saúde do **túnel**, não do **caminho**. Em
+2026-07-29 as duas `ip rule` de policy routing foram varridas por uma renovação
+de lease DHCP (ver ADR-006, atualização de 2026-07-29). O túnel seguiu
+impecável — handshake fresco, `mullvad_exit_ip: true` — e mesmo assim o tráfego
+dos dispositivos saía pela interface física com origem CGNAT e morria em
+silêncio. O watchdog reportava saúde o tempo todo, corretamente: o túnel estava
+mesmo saudável.
+
+Adicionado `exit_path_healthy()`:
+
+```bash
+ip route get 1.1.1.1 from 100.64.0.1 iif tailscale0
+# saudável se responder "dev wg-mull-br"
+```
+
+E `repair_exit_path()`, que reinstala as duas regras sem tocar no túnel, e loga
+as últimas linhas do journal do `tailscaled` — foi essa instrumentação que
+identificou o culpado na primeira ocorrência.
+
+Validado apagando as duas regras à mão: rota caiu para `via 10.0.0.1 dev
+enp0s6`, o watchdog detectou, reinstalou, e a rota voltou para `dev wg-mull-br
+table 51820`.
+
+**Lição, terceira vez no mesmo dia:** "o túnel está saudável" e "os dispositivos
+têm internet" são perguntas diferentes. Cada camada precisa do seu próprio teste
+de resultado, e o teste tem que ser feito na ponta que importa.
