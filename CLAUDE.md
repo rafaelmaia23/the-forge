@@ -10,7 +10,9 @@ Infraestrutura de auto-hospedagem completa rodando na **Oracle Cloud Free Tier (
 Tudo roda como container Docker. O repositório é a fonte da verdade — nada existe fora dele.
 
 Serviços: AdGuard Home (DNS), Nginx Proxy Manager, Nextcloud, Jellyfin + Arr Stack,
-Portainer, Uptime Kuma, Netdata, Dawarich. VPN dupla: Tailscale (rede privada) + Mullvad WireGuard (saída).
+Portainer, Uptime Kuma, Netdata, Dawarich. Tailscale como rede privada + DNS;
+saída direta à internet, sem VPN — exit node Tailscale disponível como opção
+manual por dispositivo, não como padrão (ADR-015).
 
 **Status das fases:**
 - ✅ Fase 1 — Fundação Oracle Cloud
@@ -31,7 +33,7 @@ Portainer, Uptime Kuma, Netdata, Dawarich. VPN dupla: Tailscale (rede privada) +
 | `docs/doc-conventions.md` | Como escrever docs: sanitização de IPs, placeholders, formato |
 | `docs/backup-reference.md` | O que precisa de backup por fase/serviço (insumo para Fase 8) |
 | `docs/nextcloud-config-reference.md` | Estado atual da stack Nextcloud — volumes, redes, apps, workarounds |
-| `infrastructure/watchdog/` | Watchdogs de DNS, túnel VPN e reconciliação de boot (ADR-014) |
+| `infrastructure/watchdog/` | Watchdogs de DNS e reconciliação de boot (ADR-014, ADR-015) |
 | `docs/phases/` | Guias de execução passo a passo por fase |
 | `docs/decisions/` | Architecture Decision Records (ADRs) |
 | `RUNBOOK.md` | Procedimentos operacionais do dia a dia |

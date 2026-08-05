@@ -21,13 +21,12 @@ Dispositivos pessoais (celular / PC / notebook)
 │  Interfaces de rede:                                         │
 │    enp0s6     → Internet (IP público Oracle)                 │
 │    tailscale0 → Rede privada Tailscale (100.64.0.0/10)       │
-│    wg-mull-br → Túnel WireGuard Mullvad VPN (Table=off)       │
+│    (túnel Mullvad removido em 2026-08-05, ver ADR-015)        │
 │                                                              │
-│  Roteamento (policy routing):                                │
-│    to 172.16.0.0/12 prio 5200 → tabela main (redes Docker)  │
-│    iif tailscale0  prio 5209 → tabela 51820 → wg-mull-br    │
+│  Roteamento:                                                 │
 │    tráfego da própria VM     → enp0s6 (rota padrão intacta)  │
-│    range 100.64.0.0/10       → tailscale0 (não sai pela VPN) │
+│    exit node opt-in (quando ligado) → enp0s6, MASQUERADE via │
+│    tailscale-exit-masquerade.service (ADR-015)                │
 │                                                              │
 │  Docker (rede proxy — bridge 172.18.0.0/16):                  │
 │    adguard       [:53 pub, :3000 interno]  DNS + bloqueio   │
@@ -40,14 +39,13 @@ Dispositivos pessoais (celular / PC / notebook)
 │    /dev/sda → boot volume 50 GB  → /                        │
 │    /dev/sdb → block volume 150 GB → /mnt/data               │
 │                                                              │
-│  Tailscale: exit node ativo                                  │
-│  WireGuard: policy routing, apenas tráfego forwardado        │
+│  Tailscale: exit node anunciado, uso opt-in por dispositivo   │
 └──────────────────────────────────────────────────────────────┘
 │
-│ WireGuard (Mullvad VPN) — apenas tráfego dos dispositivos
 ▼
 Internet pública
-(IP visível = servidor Mullvad VPN, não Oracle)
+(IP visível = do próprio dispositivo; ou IP Oracle, se o exit
+ node estiver ligado manualmente — ADR-015)
 ```
 
 ---
@@ -58,9 +56,12 @@ Internet pública
 ── Acesso a serviços da VM ──────────────────────────────────────
 Dispositivo → [Tailscale] → VM (INPUT) → resposta direta
 
-── Acesso à internet pelos dispositivos ─────────────────────────
+── Acesso à internet pelos dispositivos (padrão) ────────────────
+Dispositivo → Internet direto, sem passar pela VM
+
+── Acesso à internet com exit node ligado (opt-in, ver ADR-015) ─
 Dispositivo → [Tailscale] → VM (FORWARD, iif tailscale0)
-           → tabela 51820 → [WireGuard/Mullvad VPN] → Internet
+           → MASQUERADE (tailscale-exit-masquerade) → enp0s6 → Internet
 
 ── Tráfego da própria VM (SSH, atualizações) ────────────────────
 VM → enp0s6 → Internet (IP Oracle, rota padrão)

@@ -36,7 +36,7 @@
 
 O Projeto Homelab é uma infraestrutura de auto-hospedagem completa rodando na **Oracle Cloud Free Tier (ARM A1)**, construída do zero com foco em:
 
-- **Privacidade** — DNS próprio com bloqueio de trackers, tráfego roteado por VPN
+- **Privacidade** — DNS próprio com bloqueio de trackers; mascaramento de IP disponível sob demanda via exit node Tailscale (ADR-015)
 - **Controle** — Todos os serviços self-hosted, sem dependência de serviços de terceiros para dados pessoais
 - **Confiabilidade** — Backup 3-2-1 implementado, monitoramento ativo, alertas de falha
 - **Manutenibilidade** — Infraestrutura como código, versionada em Git, documentada para referência futura
@@ -94,23 +94,28 @@ Dispositivo (celular/PC/notebook)
     ▼
 Tailscale (WireGuard)
     │  DNS configurado = IP Tailscale da VPS (AdGuard)
-    │  Exit node habilitado = todo tráfego passa pela VPS
+    │  Exit node = opt-in por dispositivo, desligado por padrão (ADR-015)
     ▼
 VPS Oracle — Interface tailscale0
     │
-    ├─► AdGuard Home [:53]
-    │       ├── Resolve serviços tailscale-only → IP Tailscale da VPS ({{OCI_TS_IP}})
-    │       ├── Resolve serviços públicos → IP público Oracle ({{OCI_PUBLIC_IP}})
-    │       ├── Filtra trackers e malware (OISD + AdGuard DNS filter)
-    │       └── Upstream: Quad9 DoH (https://dns10.quad9.net/dns-query)
-    │
-    └─► Mullvad VPN via WireGuard (Table=off, policy routing: iif tailscale0)
-            │
-            ▼
-        Internet (IP público = servidor Mullvad VPN)
+    └─► AdGuard Home [:53]
+            ├── Resolve serviços tailscale-only → IP Tailscale da VPS ({{OCI_TS_IP}})
+            ├── Resolve serviços públicos → IP público Oracle ({{OCI_PUBLIC_IP}})
+            ├── Filtra trackers e malware (OISD + AdGuard DNS filter)
+            └── Upstream: Quad9 DoH (https://dns10.quad9.net/dns-query)
 ```
 
-> **Detalhe crítico:** O policy routing usa `iif tailscale0` como critério — afeta apenas pacotes que chegam pela interface Tailscale sendo forwardados. Tráfego que a VM gera localmente (SSH, serviços) nunca passa pelo tunnel WireGuard. Usar `from 100.64.0.0/10` quebraria o SSH porque a VM tem IP Tailscale nesse range.
+Sem exit node ligado, o dispositivo sai direto pela própria internet dele —
+o tráfego não passa pela VPS. Se o exit node for ligado manualmente
+(mascarar o IP com o da VPS, ver RUNBOOK.md), o pacote chega pela interface
+`tailscale0` e sai pela interface física da VPS via
+`tailscale-exit-masquerade.service` (ADR-015) — não há mais VPN Mullvad no
+meio do caminho.
+
+> **Detalhe crítico:** O acesso aos serviços via `tailscale0` afeta apenas
+> pacotes destinados à própria VM (INPUT) — não é policy routing de
+> forwarding como era com o Mullvad (ADR-005, histórico). Tráfego que a VM
+> gera localmente (SSH, serviços) nunca dependeu dessa distinção.
 
 ### Fluxo de tráfego — Acesso público (namorada, família)
 
@@ -548,19 +553,23 @@ Substituto self-hosted para o Life360. Histórico de localização com mapa, imp
 
 ### Tailscale
 
-- **Função na VPS:** Exit node + nameserver DNS (AdGuard)
-- **Função nos dispositivos:** Acesso seguro aos serviços privados + rotear tráfego pelo exit node
-- **Nota Android:** No Android só é possível ter uma VPN ativa por vez. Usar Tailscale como VPN principal (com exit node habilitado) garante tanto o acesso privado quanto o mascaramento de IP via exit node.
+- **Função na VPS:** rede privada + nameserver DNS (AdGuard) + exit node opt-in
+- **Função nos dispositivos:** acesso seguro aos serviços privados; exit node **desligado por padrão** — cada dispositivo sai pela própria internet dele
+- **Exit node (ADR-015):** continua anunciado pela VPS (`--advertise-exit-node`), mas não é usado por nenhum dispositivo por padrão. Ligar pontualmente num dispositivo específico faz o tráfego dele sair pelo IP público da VPS — sem VPN comercial por trás, então sem o anonimato que o Mullvad dava. Ver RUNBOOK.md § "Usar a VPS como exit node".
 
 **Configuração na VPS:**
 
 ```bash
-# IP forwarding (obrigatório para exit node)
+# IP forwarding (obrigatório para o exit node funcionar quando ligado)
 net.ipv4.ip_forward=1
 net.ipv6.conf.all.forwarding=1
 
-# Subir como exit node
+# Anunciar como exit node (uso continua opt-in por dispositivo)
 tailscale up --advertise-exit-node
+
+# NAT de saída direta para quando o exit node for usado — sem isso o
+# tráfego sai com origem CGNAT (100.64.0.0/10) e é descartado (ADR-015)
+# instalado por infrastructure/provision.sh como tailscale-exit-masquerade.service
 ```
 
 **No painel Tailscale Admin:**
@@ -568,30 +577,11 @@ tailscale up --advertise-exit-node
 - Aprovar o exit node da VPS
 - Definir IP Tailscale da VPS como nameserver global
 
-### Mullvad VPN (WireGuard)
-
-- **Função:** Mascarar o IP de saída dos dispositivos na internet — ISP vê tráfego para Mullvad, sites veem IP do servidor Mullvad
-- **Implementação:** WireGuard direto com arquivos `.conf` gerados no painel Mullvad — sem app/CLI, compatível com ambiente headless
-- **Policy routing:** `iif tailscale0 → tabela 51820 → wg-mull-br` — apenas tráfego forwardado pelo Tailscale sai pelo Mullvad
-- **Servidores:** BR (São Paulo/Datapacket, 0.5ms), US (Nova York), UK (Londres), JP (Tóquio), CH (Zurique)
-
-**Fluxo completo de tráfego:**
-
-```text
-Dispositivo → [Tailscale WireGuard] → VPS → [Mullvad WireGuard] → Internet
-                     ↑                   ↑
-               DNS: AdGuard          policy routing:
-               Exit node habilitado  iif tailscale0 → tabela 51820
-```
-
-**Trocar de servidor:**
-
-```bash
-sudo wg-quick down wg-mull-br
-sudo ip route del 100.64.0.0/10 table 51820 2>/dev/null
-sudo ip rule del iif tailscale0 table 51820 2>/dev/null
-sudo wg-quick up wg-mull-us
-```
+> **Histórico:** até 2026-08-05 a saída era feita por um túnel Mullvad
+> WireGuard rodando na VM (`wg-mull-br`), via policy routing
+> (`iif tailscale0 → tabela 51820`). Removido por custo/simplicidade — ver
+> [ADR-015](decisions/ADR-015-remocao-mullvad-saida-direta.md) para o
+> histórico completo e o procedimento de rollback.
 
 ---
 
@@ -1158,9 +1148,6 @@ journalctl -f
 
 # Status do Tailscale
 tailscale status
-
-# Status do WireGuard/Mullvad
-sudo wg show
 ```
 
 ---

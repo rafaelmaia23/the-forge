@@ -22,8 +22,9 @@
 #   7. Configura fail2ban (proteção SSH)
 #   8. Configura atualizações automáticas de segurança
 #   9. Cria estrutura de diretórios e rede Docker proxy
-#  10. Cria serviço systemd tailscale-docker-forward (ver ADR-006)
-#  11. Instala watchdogs de DNS, túnel VPN e reconciliação de stacks no boot
+#  10. Cria serviço tailscale-docker-forward (ADR-006) e saída direta do exit
+#      node Tailscale (ADR-015)
+#  11. Instala watchdogs de DNS e reconciliação de stacks no boot (ADR-014)
 # =============================================================================
 
 set -euo pipefail
@@ -303,17 +304,17 @@ else
     log "Rede Docker 'proxy' criada (faixa dinâmica 172.18.128.0/17)"
 fi
 
-# ─── 10. Tailscale → Docker forwarding ───────────────────────────────────────
-section "10/11 — Tailscale → Docker forwarding"
+# ─── 10. Tailscale → Docker forwarding + saída direta (exit node) ───────────
+section "10/11 — Tailscale → Docker forwarding + saída direta (exit node)"
 
 # Sem esta configuração, pacotes de clientes Tailscale destinados a containers
-# Docker são roteados para a tabela 51820 (Mullvad) após o DNAT, e desaparecem.
-# A prioridade da nossa regra precisa ficar abaixo da regra "iif tailscale0
-# lookup 51820" criada pelo PostUp do wg-mull-br.conf (fixada em priority
-# 20000 nesse arquivo, fora do repo) — o script abaixo descobre essa
-# prioridade em tempo real em vez de depender de um número fixo, e o
-# PartOf= reaplica automaticamente sempre que o túnel Mullvad reiniciar.
-# Ver docs/decisions/ADR-006-tailscale-docker-routing.md (atualização 2026-07-17)
+# Docker podem ser desviados por qualquer outra regra de policy routing com
+# prioridade mais alta e desaparecer. O script abaixo descobre a prioridade
+# viva da regra "iif tailscale0" em tempo real (em vez de depender de um
+# número fixo) e reinstala a nossa uma posição abaixo — segue funcionando
+# mesmo sem nenhuma regra concorrente hoje.
+# Ver docs/decisions/ADR-006-tailscale-docker-routing.md e ADR-015 (remoção
+# do Mullvad, 2026-08-05).
 cat > /usr/local/sbin/tailscale-docker-forward.sh << 'EOF'
 #!/bin/bash
 set -euo pipefail
@@ -333,9 +334,8 @@ chmod 755 /usr/local/sbin/tailscale-docker-forward.sh
 cat > /etc/systemd/system/tailscale-docker-forward.service << 'EOF'
 [Unit]
 Description=Allow Tailscale traffic to Docker containers
-After=docker.service tailscaled.service wg-quick@wg-mull-br.service
+After=docker.service tailscaled.service
 Requires=docker.service
-PartOf=wg-quick@wg-mull-br.service
 
 [Service]
 Type=oneshot
@@ -350,15 +350,50 @@ systemctl daemon-reload
 systemctl enable tailscale-docker-forward.service
 log "tailscale-docker-forward.service criado e habilitado"
 
-# ─── 11. Watchdogs e reconciliação de boot ───────────────────────────────────
-section "11/11 — Watchdogs (DNS, túnel VPN, stacks no boot)"
+# Saída direta (sem VPN) para quando o exit node da Tailscale for ligado
+# manualmente num dispositivo (ADR-015). O tailscaled não faz SNAT desse
+# tráfego (--snat-subnet-routes=false, necessário para o Access List do NPM
+# ver o IP real — ver ADR-007), então sem isso o tráfego do exit node sai
+# com origem CGNAT (100.64.0.0/10) e é descartado no primeiro roteador.
+cat > /usr/local/sbin/tailscale-exit-masquerade.sh << 'EOF'
+#!/bin/bash
+set -euo pipefail
+IFACE=$(ip route show default | awk '/^default/ {print $5; exit}')
+[ -n "${IFACE}" ] || { echo "tailscale-exit-masquerade: sem interface padrão encontrada" >&2; exit 1; }
 
-# Três falhas em 2026-07 mostraram que "container rodando" e "serviço systemd
-# active" não significam serviço funcionando: o adguard ficou de pé com todos os
-# upstreams mortos, e o wg-mull-br subiu sem peer nenhum. Os watchdogs testam o
-# comportamento real e agem sozinhos. Ver ADR-014.
+iptables -t nat -C POSTROUTING -s 100.64.0.0/10 -o "${IFACE}" -j MASQUERADE 2>/dev/null || \
+  iptables -t nat -A POSTROUTING -s 100.64.0.0/10 -o "${IFACE}" -j MASQUERADE
+EOF
+chmod 755 /usr/local/sbin/tailscale-exit-masquerade.sh
+
+cat > /etc/systemd/system/tailscale-exit-masquerade.service << 'EOF'
+[Unit]
+Description=MASQUERADE de saída direta para o exit node Tailscale (opt-in, ADR-015)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tailscale-exit-masquerade.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable tailscale-exit-masquerade.service
+log "tailscale-exit-masquerade.service criado e habilitado"
+
+# ─── 11. Watchdogs e reconciliação de boot ───────────────────────────────────
+section "11/11 — Watchdogs (DNS, stacks no boot)"
+
+# 2026-07: "container rodando" e "serviço systemd active" não significam
+# serviço funcionando — o adguard ficou de pé com todos os upstreams mortos.
+# O watchdog de DNS testa o comportamento real e age sozinho. Ver ADR-014.
+# (o watchdog do túnel Mullvad existiu até 2026-08-05, ver ADR-015 e
+# infrastructure/watchdog/archive-mullvad/)
 install -m 0755 "$HOMELAB_DIR"/infrastructure/watchdog/homelab-dns-watchdog.sh    /usr/local/sbin/
-install -m 0755 "$HOMELAB_DIR"/infrastructure/watchdog/homelab-vpn-watchdog.sh    /usr/local/sbin/
 install -m 0755 "$HOMELAB_DIR"/infrastructure/watchdog/homelab-stacks-boot.sh     /usr/local/sbin/
 install -m 0644 "$HOMELAB_DIR"/infrastructure/watchdog/systemd/*.service /etc/systemd/system/
 install -m 0644 "$HOMELAB_DIR"/infrastructure/watchdog/systemd/*.timer   /etc/systemd/system/
@@ -376,7 +411,6 @@ fi
 systemctl daemon-reload
 systemctl enable homelab-stacks-boot.service
 systemctl enable --now homelab-dns-watchdog.timer
-systemctl enable --now homelab-vpn-watchdog.timer
 log "Watchdogs instalados e timers ativos"
 
 # =============================================================================
@@ -394,5 +428,5 @@ echo "  1. Saia e entre novamente na sessão SSH (grupo docker só tem efeito ap
 echo "  2. Confirme: docker ps   →  deve funcionar sem sudo"
 echo "  3. Instale o Tailscale: curl -fsSL https://tailscale.com/install.sh | sh"
 echo "     Depois: sudo tailscale up --advertise-exit-node"
-echo "  4. Instale o Proton VPN CLI (ver fase-1-fundacao.md — Etapa 6)"
+echo "     (saída direta, sem VPN — exit node é opt-in por dispositivo, ver ADR-015)"
 echo ""

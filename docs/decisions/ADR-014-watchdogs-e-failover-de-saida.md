@@ -161,3 +161,19 @@ table 51820`.
 **Lição, terceira vez no mesmo dia:** "o túnel está saudável" e "os dispositivos
 têm internet" são perguntas diferentes. Cada camada precisa do seu próprio teste
 de resultado, e o teste tem que ser feito na ponta que importa.
+
+---
+
+## Atualização — 2026-08-05: watchdog de VPN aposentado (ADR-015)
+
+A saída Mullvad foi removida (ver [ADR-015](ADR-015-remocao-mullvad-saida-direta.md)).
+A seção **"2. `homelab-vpn-watchdog`"** acima, incluindo todo o mecanismo de
+failover (`enter_failover()`/`leave_failover()`, tabela 51820, `exit_path_healthy()`)
+está **superada** — não há mais túnel para supervisionar nem failover para
+executar, porque o estado "sem VPN" que o failover existia para alcançar em
+emergência agora é o estado normal e permanente. O script, a unit e o timer
+foram movidos para `infrastructure/watchdog/archive-mullvad/` (não são mais
+instalados por `provision.sh`).
+
+As seções **1** (`homelab-dns-watchdog`) e **3** (`homelab-stacks-boot`)
+continuam em vigor sem alteração — nunca dependeram do Mullvad.

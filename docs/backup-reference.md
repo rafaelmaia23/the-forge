@@ -21,7 +21,7 @@ Serve de insumo para os scripts e a automação da **Fase 8** (Restic + Rclone +
 | O que | Onde na VM | Categoria | Observação |
 | --- | --- | --- | --- |
 | Compose files, scripts, docs | `/srv/the-forge/` | Git ✓ | Versionado no repositório |
-| Configs Mullvad WireGuard | `/etc/wireguard/*.conf` | Crítico | Fora do repo; perda = sem VPN até redownload no painel Mullvad |
+| ~~Configs Mullvad WireGuard~~ | ~~`/etc/wireguard/*.conf`~~ | — | **Removidas em 2026-08-05** (ADR-015). Backup final em `~/.homelab/backups/mullvad-removal-2026-08-05/` na VM, fora do repo |
 | Systemd service de routing | `/etc/systemd/system/tailscale-docker-forward.service` | Crítico | Fora do repo; sem ele o Docker fica inacessível via Tailscale. Deve ser adicionado ao `provision.sh` |
 | Config stub DNS | `/etc/systemd/resolved.conf.d/no-stub.conf` | Crítico | Fora do repo; sem ele a porta 53 fica bloqueada pelo systemd-resolved |
 | Segredos da instalação | `~/.homelab/secrets.env` | Crítico | IPs, senhas, tokens — perda = recriar do zero |
@@ -97,8 +97,8 @@ Serve de insumo para os scripts e a automação da **Fase 8** (Restic + Rclone +
 /srv/the-forge/services/proxy/data/    ← SQLite NPM
 /srv/the-forge/services/proxy/letsencrypt/  ← certs SSL
 ~/.homelab/secrets.env                 ← segredos
-/etc/wireguard/                        ← configs Mullvad
 /etc/systemd/system/tailscale-docker-forward.service
+/etc/systemd/system/tailscale-exit-masquerade.service
 /etc/systemd/resolved.conf.d/
 dumps de banco (nextcloud pg_dump, dawarich pg_dump)
 ```

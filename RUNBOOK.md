@@ -18,12 +18,14 @@ internet volta na hora, mantendo o acesso ao servidor por IP (`ssh homelab`).
 Perde bloqueio de anúncios e os domínios internos até religar. Para voltar ao
 normal depois de resolver: `tailscale set --accept-dns=true`.
 
-Se a internet **não** voltar com isso, o problema não é DNS — é o exit node.
-Desligue-o no dispositivo (`tailscale set --exit-node=`) e siga para
-"Túnel Mullvad" abaixo.
+Se a internet **não** voltar com isso, o problema não é DNS — é o exit node
+ligado no dispositivo. Desligue-o (`tailscale set --exit-node=`); sem VPN
+Mullvad (ver ADR-015), a saída volta a ser direta pela própria rede do
+dispositivo, sem depender de mais nada na VPS.
 
-> Os watchdogs (ADR-014) tratam sozinhos os dois casos em até ~2 minutos. Este
-> procedimento é para quando você não quer esperar, ou quando eles falharam.
+> O `homelab-dns-watchdog` (ADR-014) trata sozinho falhas do AdGuard em até
+> ~2 minutos. Este procedimento é para quando você não quer esperar, ou
+> quando ele falhou.
 
 ---
 
@@ -47,78 +49,11 @@ ssh -i ~/.ssh/oracle_homelab ubuntu@{{OCI_PUBLIC_IP}}
 ```bash
 # Visão geral rápida
 tailscale status                        # dispositivos na rede Tailscale
-sudo wg show                            # status do tunnel WireGuard Mullvad
 curl -s https://api.ipify.org           # IP público da VM (deve ser IP Oracle)
 sudo ufw status verbose                 # regras de firewall ativas
 docker ps                               # containers rodando
 df -h                                   # uso de disco
 free -h                                 # uso de memória
-```
-
----
-
-## WireGuard / Mullvad VPN
-
-### Verificar estado
-
-```bash
-sudo wg show                            # tunnel ativo e último handshake
-ip rule | grep tailscale                # deve mostrar UMA linha: iif tailscale0 lookup 51820 — priority 20000 (fixa, ver wg-mull-br.conf)
-ip route show table 51820               # deve mostrar: default dev wg-mull-br + 100.64.0.0/10
-ip route | grep default                 # default via 10.0.0.1 dev enp0s6 (intacto)
-systemctl is-active wg-quick@wg-mull-br # deve ser "active" — sobe sozinho no boot (ADR-010)
-```
-
-> **Atenção:** desde 2026-07-17, o `PostUp`/`PostDown` de `wg-mull-br.conf` são
-> idempotentes (fazem `del` silencioso antes do `add`) — rodar `wg-quick
-> up`/`wg-quick down` manualmente não deve mais deixar rotas ou `ip rule`
-> órfãs. Se ainda assim `ip rule | grep tailscale` mostrar mais de uma linha,
-> ou `wg-quick up` falhar com `RTNETLINK answers: File exists`, use a limpeza
-> da seção "Trocar de servidor" abaixo antes de tentar de novo — é sinal de
-> que o arquivo `.conf` foi editado manualmente sem a proteção `|| true`.
-
-### Trocar de servidor
-
-```bash
-# 1. Derrubar o tunnel atual
-sudo wg-quick down wg-mull-br
-
-# 2. Limpar rotas órfãs (sempre fazer antes de subir outro)
-sudo ip route del 100.64.0.0/10 table 51820 2>/dev/null
-sudo ip rule del iif tailscale0 table 51820 2>/dev/null
-
-# 3. Subir o servidor desejado
-sudo wg-quick up wg-mull-us     # Estados Unidos
-sudo wg-quick up wg-mull-uk     # Reino Unido
-sudo wg-quick up wg-mull-jp     # Japão
-sudo wg-quick up wg-mull-ch     # Suíça
-sudo wg-quick up wg-mull-br     # Brasil (padrão)
-```
-
-### Servidores disponíveis
-
-| Arquivo | País | Cidade | Provider | Uso |
-|---|---|---|---|---|
-| `wg-mull-br.conf` | Brasil | São Paulo | Datapacket | Padrão |
-| `wg-mull-us.conf` | EUA | Nova York | — | Conteúdo americano |
-| `wg-mull-uk.conf` | Reino Unido | Londres | — | Conteúdo britânico |
-| `wg-mull-jp.conf` | Japão | Tóquio | — | Animes / conteúdo asiático |
-| `wg-mull-ch.conf` | Suíça | Zurique | — | Privacidade máxima |
-
-### Atualizar chaves WireGuard
-
-As chaves do Mullvad não expiram automaticamente mas podem ser rotacionadas:
-
-```bash
-# 1. Gerar novo .conf em mullvad.net/en/account/wireguard-config
-# 2. Substituir o arquivo na VM
-sudo nano /etc/wireguard/wg-mull-br.conf
-
-# 3. Reiniciar o tunnel
-sudo wg-quick down wg-mull-br
-sudo ip route del 100.64.0.0/10 table 51820 2>/dev/null
-sudo ip rule del iif tailscale0 table 51820 2>/dev/null
-sudo wg-quick up wg-mull-br
 ```
 
 ---
@@ -130,6 +65,26 @@ tailscale status                        # todos os dispositivos
 tailscale ip -4                         # IP Tailscale da VM
 sudo tailscale up --advertise-exit-node # re-anunciar como exit node se necessário
 ```
+
+### Usar a VPS como exit node (opt-in, por dispositivo)
+
+Desde a ADR-015, não há mais VPN de saída — os dispositivos navegam direto
+pela própria rede deles por padrão. Para mascarar o IP de um dispositivo
+específico usando o IP público da VPS (sem o anonimato de uma VPN comercial):
+
+```bash
+# No dispositivo que você quer mascarar:
+tailscale set --exit-node=<ip-tailscale-da-vps> --exit-node-allow-lan-in=true
+
+# Conferir:
+curl -s https://api.ipify.org           # deve mostrar o IP público Oracle
+
+# Voltar ao padrão (saída direta pela própria rede):
+tailscale set --exit-node=
+```
+
+Isso não é o padrão e não deve virar rotina — é para os casos pontuais em
+que faz sentido aparecer com o IP da VPS.
 
 ### Recuperar acesso se o Tailscale travar
 
@@ -238,25 +193,8 @@ Regras ativas na Fase 1:
 
 ```bash
 sudo systemctl status tailscale
-sudo wg show
 sudo systemctl status ssh
 journalctl -xe --no-pager | tail -50
-```
-
-### WireGuard travou e cortou acesso
-
-```bash
-# Derrubar forçado
-sudo ip link delete wg-mull-br 2>/dev/null
-
-# Limpar regras residuais
-sudo ip route del 100.64.0.0/10 table 51820 2>/dev/null
-sudo ip rule del iif tailscale0 table 51820 2>/dev/null
-sudo iptables -t nat -F POSTROUTING
-sudo iptables -t mangle -F FORWARD
-
-# Subir novamente
-sudo wg-quick up wg-mull-br
 ```
 
 ### AdGuard não sobe após crash / DNS caiu para todo mundo
@@ -294,61 +232,24 @@ tomado em 2026-07-09 e ele causou diretamente o incidente de 2026-07-28.
 
 ---
 
-### Túnel Mullvad caiu / dispositivos sem internet com o exit node ligado
-
-```bash
-# Saude real do tunel — o que o watchdog testa
-sudo wg show wg-mull-br                     # precisa ter um peer E handshake recente
-curl -s --interface wg-mull-br https://am.i.mullvad.net/json   # mullvad_exit_ip: true
-
-# Estamos em modo degradado (saindo sem VPN)?
-ls /run/homelab-vpn-watchdog.degraded 2>/dev/null && echo "DEGRADADO — sem Mullvad"
-ip route show table 51820                   # 'default dev wg-mull-br' = normal
-                                            # 'default via 10.0.0.1 dev enp0s6' = degradado
-
-# Forcar uma rodada agora
-sudo /usr/local/sbin/homelab-vpn-watchdog.sh
-journalctl -t homelab-vpn-watchdog --since -30min
-```
-
-**Se `wg show` não listar nenhum peer**, o `.conf` perdeu o bloco `[Peer]` —
-foi a causa do incidente de 2026-07-28. Restaure a partir de um backup em
-`/etc/wireguard/*.bak-*`, **anexando só o bloco `[Peer]`** ao arquivo vivo (os
-backups antigos não têm as correções de idempotência do `PostUp`):
-
-```bash
-sudo sed -n '/^\[Peer\]/,$p' /etc/wireguard/wg-mull-br.conf.bak-XXXXXXXX \
-    | sudo tee -a /etc/wireguard/wg-mull-br.conf
-sudo systemctl restart wg-quick@wg-mull-br
-```
-
-> ⚠️ **Nunca edite um `.conf` do WireGuard com o túnel no ar.** O `wg-quick` só
-> lê o arquivo no `up`, então um erro fica **latente até o próximo boot** — no
-> incidente de 2026-07-28 foram 11 dias entre a causa e o sintoma. Sempre
-> `sudo wg-quick down wg-mull-br` antes de editar.
-
----
-
 ### Watchdogs — operação
 
 ```bash
 systemctl list-timers 'homelab-*'                  # proximos disparos
 systemctl status homelab-dns-watchdog.timer
-systemctl status homelab-vpn-watchdog.timer
-journalctl -t homelab-dns-watchdog -t homelab-vpn-watchdog --since today
+journalctl -t homelab-dns-watchdog --since today
 
 # Config (tokens de push do Uptime Kuma — 0600, fora do repo)
 sudo cat /etc/homelab-watchdog.env
 ```
 
-Os watchdogs batem heartbeat nos push monitors **apenas quando o serviço
-responde de fato**. Silêncio é alerta: se o watchdog não roda, ou o host caiu,
-ou o timer morreu — os dois merecem aviso. Ver ADR-014.
+O watchdog bate heartbeat no push monitor **apenas quando o AdGuard responde
+de fato**. Silêncio é alerta: se o watchdog não roda, ou o host caiu, ou o
+timer morreu — os dois merecem aviso. Ver ADR-014.
 
-Ao rotacionar chaves do Mullvad, um `.conf` novo colado do painel **não terá**
-as correções de idempotência (`ip route replace`, `iptables -C` antes de `-A`).
-Reaplique-as, ou o watchdog não conseguirá reerguer o túnel a partir do modo
-degradado.
+> O watchdog do túnel Mullvad existiu até 2026-08-05 — ver
+> [ADR-015](docs/decisions/ADR-015-remocao-mullvad-saida-direta.md) e
+> `infrastructure/watchdog/archive-mullvad/`.
 
 ### Painéis internos (`*.maiahub.com.br` tailscale-only) inacessíveis mesmo com Tailscale up
 
@@ -378,59 +279,25 @@ conexão em "forwardada". Correção:
 sudo tailscale set --snat-subnet-routes=false
 ```
 
-O Tailscale emite um aviso sobre exit node; **não se aplica a este setup** — o
-`PostUp` do `wg-mull-br.conf` já mascara o tráfego de saída
-(`-s 100.64.0.0/10 -o wg-mull-br -j MASQUERADE`), e o modo degradado do watchdog
-faz o mesmo para a `enp0s6`. A rota de volta vive na tabela 52 (regra prio
-5270). Visto em 2026-07-28.
+O Tailscale emite um aviso sobre exit node; **não se aplica ao tráfego para os
+painéis** — isso é tráfego Tailscale→Docker, não exit node. O NAT do exit node
+(quando ligado num dispositivo, ver ADR-015) é feito à parte pelo
+`tailscale-exit-masquerade.service`, na interface física da VPS. Visto em
+2026-07-28.
 
-**Demais sintomas** — primeiro, determine o escopo: **acontece em todos os dispositivos Tailscale
-(PC, celular, etc.) ou só em um?** Isso decide por onde procurar.
+> **Histórico (obsoleto desde 2026-08-05, ver ADR-015):** até a remoção do
+> Mullvad, havia uma segunda causa possível para 403/timeout em todos os
+> dispositivos: a regra `to 172.16.0.0/12 lookup main`
+> (`tailscale-docker-forward.service`) precisava ter prioridade **menor**
+> (avaliada antes) que a regra `iif tailscale0 lookup 51820` do
+> `wg-mull-br.conf`, que tinha uma rota `default` (catch-all) pro túnel
+> Mullvad na tabela 51820 — se avaliada primeiro, todo tráfego Tailscale→Docker
+> era desviado pelo Mullvad e mascarado sob um único IP interno (ADR-006,
+> incidentes de 2026-07-16 e 2026-07-17). Sem o túnel Mullvad, não existe mais
+> essa rota concorrente — `to 172.16.0.0/12 lookup main` é hoje redundante com
+> a tabela `main` padrão, mantida apenas por simplicidade.
 
-**Se acontece em todos os dispositivos → comece pela VPS, não pelo cliente.**
-Causa já vista em produção duas vezes (2026-07-16 e 2026-07-17, ver ADR-006 e
-`docs/migration-log.md`): a regra `to 172.16.0.0/12 lookup main`
-(`tailscale-docker-forward.service`) precisa ter prioridade **menor** (avaliada
-antes) que a regra `iif tailscale0 lookup 51820` de `wg-mull-br.conf` — essa
-última tem uma rota `default` (catch-all) pro túnel Mullvad na tabela 51820,
-então se ela for avaliada primeiro, todo tráfego Tailscale→Docker (não só DNS)
-é desviado pelo Mullvad e mascarado sob um único IP interno.
-
-**Importante:** essa regra do `wg-mull-br.conf` **não é gerenciada pelo
-Tailscale** — é nossa, criada pelo `PostUp` do próprio túnel Mullvad, e desde
-2026-07-17 tem `priority 20000` fixa no arquivo (antes disso não tinha
-prioridade explícita, então o `iproute2` atribuía um valor arbitrário toda vez
-que o `wg-quick` subia — foi isso que causou o incidente de 07-16, caiu para
-5199, e o de 07-17, caiu para 99, sempre que o `tailscaled` reinicia, ex:
-auto-update, e derruba o `wg-quick@wg-mull-br` junto via `Requires=` do
-ADR-010).
-
-```bash
-ip rule list | grep -E "172.16.0.0/12|tailscale0"
-# "iif tailscale0 lookup 51820"     deve estar em priority 20000 (fixo em wg-mull-br.conf)
-# "to 172.16.0.0/12 lookup main"    deve estar em priority MENOR que a de cima
-
-# Se estiver errado, o mais simples é deixar o próprio serviço se autocorrigir:
-sudo systemctl restart tailscale-docker-forward.service
-# O script (/usr/local/sbin/tailscale-docker-forward.sh) descobre a prioridade
-# viva da regra "iif tailscale0" e reinstala a nossa uma abaixo dela — não
-# depende mais de um número fixo "bem abaixo de toda a faixa".
-
-# Se a regra "iif tailscale0" sumiu ou está em outra prioridade que não 20000,
-# o problema é no wg-mull-br.conf ou no túnel — verifique:
-sudo grep "iif tailscale0" /etc/wireguard/wg-mull-br.conf   # deve ter "priority 20000" nas linhas PostUp/PostDown
-systemctl status wg-quick@wg-mull-br.service                 # deve estar "active"
-```
-
-Confirmar com captura de pacotes que o tráfego vai direto para a bridge
-Docker, sem tocar `wg-mull-br`:
-```bash
-sudo timeout 30 tcpdump -ni any port 53 and host 172.18.0.2 -v
-# Não deve aparecer "wg-mull-br" nas linhas capturadas — só a bridge
-# (br-...) e o veth do container.
-```
-
-**Se acontece só em um dispositivo específico** — aí sim vale investigar o
+**Se acontece só em um dispositivo específico** — investigue o
 lado do cliente antes de mexer na VPS:
 
 ```bash
@@ -675,8 +542,7 @@ O IP está fixado em `172.18.0.2` via `ipv4_address` no compose — não muda ao
 | Fase | Serviço | Container | Acesso |
 |---|---|---|---|
 | 1 | Docker | — | sistema |
-| 1 | Tailscale | — | exit node |
-| 1 | WireGuard/Mullvad | — | `wg-mull-br` |
+| 1 | Tailscale | — | rede privada + exit node opt-in (ADR-015) |
 | 1 | UFW | — | firewall |
 | 1 | fail2ban | — | segurança |
 | 2 | AdGuard Home | `adguard` | `https://adguard.maiahub.com.br` |

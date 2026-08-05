@@ -15,6 +15,13 @@ Formato: [Keep a Changelog](https://keepachangelog.com)
 - Volume nomeado `nextcloud_html` para `/var/www/html` (ADR-013)
 - `Restart=on-failure` no drop-in do `wg-quick@wg-mull-br` (ADR-010, atualização)
 - Seção "Primeiro socorro" no RUNBOOK: `tailscale set --accept-dns=false` devolve a internet em qualquer dispositivo sem depender do servidor
+- `tailscale-exit-masquerade.sh`/`.service` — MASQUERADE de `100.64.0.0/10` pela interface física, para o exit node Tailscale opt-in continuar funcionando sem VPN por trás (ADR-015)
+
+### Removed
+
+- **Túnel Mullvad WireGuard** (`wg-mull-br`) e toda a automação associada — assinatura cancelada por custo/simplicidade. Saída dos dispositivos passa a ser direta; exit node Tailscale continua anunciado, mas 100% opt-in por dispositivo, não mais o padrão. Config antiga preservada fora do repo em `~/.homelab/backups/mullvad-removal-2026-08-05/` e no git tag `pre-mullvad-removal-2026-08-05` (ADR-015)
+- `homelab-vpn-watchdog` (script/service/timer) — movido para `infrastructure/watchdog/archive-mullvad/`, não instalado mais por `provision.sh`
+- `PartOf=wg-quick@wg-mull-br.service` em `tailscale-docker-forward.service` — desacoplado antes da remoção do Mullvad
 
 ### Fixed
 

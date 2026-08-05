@@ -669,6 +669,64 @@ dias.
 
 ---
 
+## 2026-08-05 — Remoção do Mullvad WireGuard (ADR-015)
+
+### O que foi feito
+
+Por custo e simplicidade — e após três incidentes de produção causados pela
+combinação de duas VPNs empilhadas (ADR-006, ADR-010, ADR-014) — a assinatura
+Mullvad foi cancelada. A saída dos dispositivos deixou de passar por VPN;
+Tailscale e AdGuard continuam intactos.
+
+- Tag git `pre-mullvad-removal-2026-08-05` criada no HEAD anterior à mudança
+- Backup de `/etc/wireguard/*` (8 arquivos, incluindo os 4 configs regionais
+  nunca usados), do override systemd do ADR-010 e do `homelab-watchdog.env`
+  com os tokens reais, em `~/.homelab/backups/mullvad-removal-2026-08-05/`
+  na VM (fora do repo — contém chaves e tokens)
+- `homelab-vpn-watchdog` desligado antes de qualquer mudança de rota
+- `tailscale-docker-forward.service` desacoplado do Mullvad (removido
+  `PartOf=`/`After=wg-quick@wg-mull-br.service`) — evita que parar o Mullvad
+  derrube junto o `ACCEPT` que permite Tailscale→Docker (inclusive DNS)
+- `wg-quick@wg-mull-br` parado, desabilitado e mascarado — `PostDown`
+  limpou sozinho a `ip rule` (priority 20000), a tabela de rotas 51820, o
+  MASQUERADE e o clamp de MSS, tudo verificado depois, não presumido
+- Novo `tailscale-exit-masquerade.sh`/`.service`: MASQUERADE de
+  `100.64.0.0/10` pela interface física, para o exit node continuar
+  funcionando quando ligado manualmente (opt-in, não é mais o padrão)
+- `/etc/wireguard/wg-mull-*` removidos da VM (já com backup confirmado);
+  watchdog de VPN removido de `/usr/local/sbin` e do systemd
+- No repositório: scripts do watchdog de VPN movidos (não apagados) para
+  `infrastructure/watchdog/archive-mullvad/` — sem segredos, versionados
+  normalmente; `provision.sh` atualizado (seções 10 e 11)
+
+### Validações finais
+
+| Item | Resultado |
+| --- | --- |
+| Interfaces WireGuard | nenhuma (`ip link show type wireguard` vazio) |
+| `ip rule`/tabela 51820 | removidos, confirmado após o `wg-quick down` |
+| MASQUERADE novo | presente em `enp0s6` para `100.64.0.0/10` |
+| `tailscale-docker-forward` | sobreviveu à parada do Mullvad, `PartOf` vazio |
+| `DOCKER-USER -i tailscale0 -j ACCEPT` | intacto |
+| AdGuard | resolvendo normalmente via `172.18.0.2` |
+| Containers Docker | todos `Up`, nenhum afetado |
+| `homelab-dns-watchdog` / `homelab-stacks-boot` | ativos, sem alteração |
+| `homelab-vpn-watchdog` | removido (`could not be found`) |
+| Dispositivos Tailscale | `pc-fedora` e `poco-x7-pro` seguem `direct`, exit node continua anunciado (`offers exit node`) mas não usado por padrão |
+
+### Pendente
+
+- Teste manual do exit node opt-in a partir de um dispositivo real
+  (`tailscale set --exit-node=<ip>` → conferir IP público → desligar)
+- Confirmar reachability dos painéis (NPM, Portainer, Uptime Kuma, Netdata)
+  a partir de um dispositivo Tailscale real — não testável a partir da
+  própria VM por causa do Access List
+
+Ver [ADR-015](decisions/ADR-015-remocao-mullvad-saida-direta.md) para o
+procedimento completo de rollback.
+
+---
+
 - **Fase 2** ✅ — AdGuard Home: DNS privado com bloqueio de trackers
 - **Fase 3** ✅ — Nginx Proxy Manager: proxy reverso com SSL e access lists
 - **Fase 4** ✅ — Portainer + Uptime Kuma + Netdata: gerenciamento e monitoramento
